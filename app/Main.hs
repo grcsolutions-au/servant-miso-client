@@ -19,7 +19,7 @@ import Servant.API
 -----------------------------------------------------------------------------
 main :: IO ()
 main = startApp defaultEvents myComponent
-  { initialAction = Just Start
+  { mount = Just Start
   }
 -----------------------------------------------------------------------------
 type MyComponent = App () Action
