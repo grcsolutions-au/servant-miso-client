@@ -25,7 +25,7 @@ import Servant.Miso.Client
 import Servant.API
 -----------------------------------------------------------------------------
 main :: IO ()
-main = run $ startComponent myComponent
+main = startApp defaultEvents myComponent
   { initialAction = Just Start
   }
 -----------------------------------------------------------------------------
