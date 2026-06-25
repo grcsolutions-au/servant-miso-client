@@ -25,10 +25,14 @@ main = startApp defaultEvents myComponent
 type MyComponent = App () Action
 -----------------------------------------------------------------------------
 myComponent :: MyComponent
-myComponent = component () update_ $ \() ->
-  H.div_ []
-  [ button_ [ onClick Download ] [ "download" ]
-  ] where
+myComponent = component () update_ view_
+  where
+      view_ :: () -> () -> View () Action
+      view_ _ _ =
+        H.div_ []
+        [ button_ [ onClick Download ] [ "download" ]
+        ]
+
       update_ = \case
         Download -> do
           io_ (consoleLog "clicked")
@@ -75,7 +79,7 @@ uploadFile :<|> downloadFile = toClient mempty (Proxy @API)
 -----------------------------------------------------------------------------
 type GitHubAPI = Get '[JSON] Value
 -----------------------------------------------------------------------------
-downloadGithub :: (Response Value -> Action) -> (Response MisoString -> Action) -> Effect ROOT () Action
+downloadGithub :: (Response Value -> Action) -> (Response MisoString -> Action) -> Effect ROOT props () Action
 downloadGithub successsful errorful = withSink $ \sink ->
   toClient "https://api.github.com" (Proxy @GitHubAPI) (sink . successsful) (sink . errorful)
 -----------------------------------------------------------------------------
