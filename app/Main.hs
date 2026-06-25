@@ -80,3 +80,4 @@ downloadGithub :: (Response Value -> Action) -> (Response MisoString -> Action) 
 downloadGithub successsful errorful = withSink $ \sink ->
   toClient "https://api.github.com" (Proxy @GitHubAPI) (sink . successsful) (sink . errorful)
 -----------------------------------------------------------------------------
+
