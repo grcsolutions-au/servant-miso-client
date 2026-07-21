@@ -22,7 +22,7 @@ library
   exposed-modules:
     Servant.Miso.Client
   build-depends:
-    base < 5, miso, servant, containers, http-media
+    base < 5, miso >= 1.11, servant, containers, http-media
   hs-source-dirs:
     src
   default-language:
@@ -36,7 +36,7 @@ executable app
   other-modules:
     Servant.Miso.Client
   build-depends:
-    base < 5, miso, containers, servant
+    base < 5, miso >= 1.11, containers, servant
   hs-source-dirs:
     src
   default-language:
