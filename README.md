@@ -3,6 +3,12 @@
 
 This is a [servant-client](https://github.com/haskell-servant/servant) binding to [miso](https://github.com/dmjio/miso).
 
+## Response-plan assumptions
+
+`UVerb`, `MultiVerb`, and ordinary `Verb` clients use a status-selected response plan. Each expected HTTP status is assumed to identify exactly one response representation, including one Fetch reader and one Haskell parser.
+
+This is intentionally not compile-time enforced. If alternatives share an HTTP status, the first declared alternative wins. If a response type declares multiple media types, only the first declared representation supplies the reader and parser. Miso does not validate the response `Content-Type` or retry another parser, so those cases may differ from native `servant-client-core` or decode with the wrong representation.
+
 
 ```haskell
 -----------------------------------------------------------------------------

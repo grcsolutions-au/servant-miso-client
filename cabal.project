@@ -2,3 +2,8 @@ packages:
   .
 
 flags: +template-haskell
+
+source-repository-package
+  type: git
+  location: https://github.com/grcsolutions-au/miso
+  tag: 6cc4f03ec6b3916550c630ed25c392969b06c5c0

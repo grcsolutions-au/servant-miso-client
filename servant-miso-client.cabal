@@ -21,8 +21,10 @@ library
     warnings
   exposed-modules:
     Servant.Miso.Client
+  -- MultiVerb decoding uses HTTP header, text, bytes, and SOP support.
   build-depends:
-    base < 5, miso >= 1.11, servant, containers, http-media
+    base < 5, miso >= 1.12.1, servant, containers, http-media, http-types,
+    sop-core, bytestring, case-insensitive, text
   hs-source-dirs:
     src
   default-language:
@@ -35,8 +37,10 @@ executable app
     app
   other-modules:
     Servant.Miso.Client
+  -- Keep the example executable's dependencies aligned with the library.
   build-depends:
-    base < 5, miso >= 1.11, containers, servant
+    base < 5, miso >= 1.12.1, containers, servant, http-media, http-types,
+    sop-core, bytestring, case-insensitive, text
   hs-source-dirs:
     src
   default-language:

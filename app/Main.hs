@@ -27,8 +27,9 @@ type MyComponent = App () Action
 myComponent :: MyComponent
 myComponent = component () update_ view_
   where
-      view_ :: () -> () -> View () Action
-      view_ _ _ =
+  -- Keep the example aligned with the current Miso view callback shape.
+      view_ :: () -> () -> () -> View () Action
+      view_ _ _ _ =
         H.div_ []
         [ button_ [ onClick Download ] [ "download" ]
         ]
@@ -79,7 +80,8 @@ uploadFile :<|> downloadFile = toClient mempty (Proxy @API)
 -----------------------------------------------------------------------------
 type GitHubAPI = Get '[JSON] Value
 -----------------------------------------------------------------------------
-downloadGithub :: (Response Value -> Action) -> (Response MisoString -> Action) -> Effect ROOT props () Action
+-- The client effect carries no ROOT value; responses arrive through the sink.
+downloadGithub :: (Response Value -> Action) -> (Response MisoString -> Action) -> Effect () props () Action
 downloadGithub successsful errorful = withSink $ \sink ->
   toClient "https://api.github.com" (Proxy @GitHubAPI) (sink . successsful) (sink . errorful)
 -----------------------------------------------------------------------------
