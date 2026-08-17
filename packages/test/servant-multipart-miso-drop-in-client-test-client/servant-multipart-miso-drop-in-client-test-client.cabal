@@ -1,0 +1,42 @@
+cabal-version: 3.0
+name: servant-multipart-miso-drop-in-client-test-client
+version: 0.1.0.0
+license: BSD-3-Clause
+synopsis: Multipart test client for servant-multipart-miso-drop-in-client
+build-type: Simple
+
+executable servant-multipart-miso-drop-in-client-test-client
+  main-is: Main.hs
+  hs-source-dirs:
+    app
+  default-extensions:
+    NamedFieldPuns
+    OverloadedStrings
+    TypeApplications
+    CPP
+  ghc-options: -Wall -Wunused-packages -Werror
+  build-depends:
+    base < 5,
+    bytestring,
+    text,
+    servant-multipart-miso-drop-in-api,
+    servant-multipart-miso-drop-in-client,
+    servant-miso-drop-in-client,
+    servant-multipart-miso-drop-in-client-test-common
+  if impl(ghcjs) || arch(javascript) || arch(wasm32)
+    build-depends:
+      miso,
+  else
+    cpp-options:
+      -DVANILLA
+    build-depends:
+      directory,
+  if arch(wasm32)
+    ghc-options:
+      -no-hs-main
+      -optl-mexec-model=reactor
+      -optl-Wl,--export=hs_start
+  if arch(javascript)
+    ld-options:
+      -sEXPORTED_RUNTIME_METHODS=HEAP8
+  default-language: Haskell2010

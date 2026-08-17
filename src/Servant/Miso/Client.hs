@@ -62,64 +62,50 @@ data Request
   }
 -----------------------------------------------------------------------------
 class Accept ctyp => MimeRender ctyp a where
-  type MimeRenderType a :: Type
-  mimeRender :: Proxy ctyp -> a -> MimeRenderType a
+  mimeRender :: Proxy ctyp -> a -> IO JSVal
 -----------------------------------------------------------------------------
 instance (ToJSVal a, ToJSON a) => MimeRender JSON a where
-  type MimeRenderType a = IO JSVal
   mimeRender Proxy x = toJSVal (encode x)
 -----------------------------------------------------------------------------
 instance MimeRender OctetStream Blob where
-  type MimeRenderType Blob = IO JSVal
   mimeRender Proxy = toJSVal
 -----------------------------------------------------------------------------
 instance MimeRender OctetStream ArrayBuffer where
-  type MimeRenderType ArrayBuffer = IO JSVal
   mimeRender Proxy = toJSVal
 ----------------------------------------------------------------------------
 instance MimeRender OctetStream File where
-  type MimeRenderType File = IO JSVal
   mimeRender Proxy = toJSVal
 -----------------------------------------------------------------------------
 instance MimeRender FormUrlEncoded URLSearchParams where
-  type MimeRenderType URLSearchParams = IO JSVal
   mimeRender Proxy = toJSVal
 -----------------------------------------------------------------------------
 instance MimeRender FormUrlEncoded FormData where
-  type MimeRenderType FormData = IO JSVal
   mimeRender Proxy = toJSVal
 -----------------------------------------------------------------------------
 instance MimeRender PlainText MisoString where
-  type MimeRenderType MisoString = IO JSVal
   mimeRender Proxy = toJSVal
 -----------------------------------------------------------------------------
 class Accept ctyp => MimeUnrender ctyp a where
-  type MimeUnrenderType a :: Type
   mimeUnrenderType :: Proxy ctyp -> Proxy a -> CONTENT_TYPE
-  mimeUnrender :: Proxy ctyp -> MimeUnrenderType a -> IO (Either MisoString a)
+  mimeUnrender :: Proxy ctyp -> JSVal -> IO (Either MisoString a)
 -----------------------------------------------------------------------------
 instance MimeUnrender OctetStream File where
-  type MimeUnrenderType File = JSVal
   mimeUnrenderType Proxy Proxy = BLOB
   mimeUnrender Proxy = fmap pure . fromJSValUnchecked
 -----------------------------------------------------------------------------
 instance MimeUnrender OctetStream Blob where
-  type MimeUnrenderType Blob = JSVal
   mimeUnrenderType Proxy Proxy = BLOB
   mimeUnrender Proxy = fmap pure . fromJSValUnchecked
 -----------------------------------------------------------------------------
 instance MimeUnrender OctetStream ArrayBuffer where
-  type MimeUnrenderType ArrayBuffer = JSVal
   mimeUnrenderType Proxy Proxy = ARRAY_BUFFER
   mimeUnrender Proxy = fmap pure . fromJSValUnchecked
 -----------------------------------------------------------------------------
 instance MimeUnrender PlainText MisoString where
-  type MimeUnrenderType MisoString = JSVal
   mimeUnrenderType Proxy Proxy = TEXT
   mimeUnrender Proxy = fmap pure . fromJSValUnchecked
 -----------------------------------------------------------------------------
 instance FromJSON json => MimeUnrender JSON json where
-  type MimeUnrenderType json = JSVal
   mimeUnrenderType Proxy Proxy = JSON
   mimeUnrender Proxy jval = do
     value :: Value <- fromJSValUnchecked jval

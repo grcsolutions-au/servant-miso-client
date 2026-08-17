@@ -1,0 +1,52 @@
+cabal-version:      3.0
+name:               servant-multipart-miso-drop-in-client
+version:            0.1.0.0
+synopsis:           Multipart client compatibility layer for servant-miso-client
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Clinton Mead (clintonmead@gmail.com)
+maintainer:         code@dmj.io
+category:           Web
+build-type:         Simple
+
+library
+  ghc-options:
+    -Weverything
+    -Werror
+    -Wno-missing-safe-haskell-mode
+    -Wno-missing-import-lists
+    -Wno-implicit-prelude
+    -Wno-prepositive-qualified-module
+    -Wno-missing-kind-signatures
+    -Wno-missing-role-annotations
+    -Wno-safe
+    -Wno-unsafe
+    -Wno-all-missed-specialisations
+  exposed-modules:
+      Servant.Multipart.Client
+  build-depends:
+      base
+  hs-source-dirs:
+    src
+  default-language:
+    Haskell2010
+  default-extensions:
+    FlexibleContexts
+    FlexibleInstances
+    OverloadedStrings
+    ScopedTypeVariables
+    TypeSynonymInstances
+    TypeFamilies
+    TypeApplications
+    TypeOperators
+  if impl(ghcjs) || arch(javascript) || arch(wasm32)
+    build-depends:
+        miso
+      , servant
+      , servant-multipart-miso-drop-in-api
+      , servant-miso-client
+  else
+    build-depends:
+        servant-multipart-client
+    cpp-options:
+      -DVANILLA

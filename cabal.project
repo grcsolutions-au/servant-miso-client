@@ -1,12 +1,36 @@
 packages:
   .
+  ./packages/servant-miso-drop-in-client
+  ./packages/servant-miso-drop-in-api
+  ./packages/servant-miso-drop-in-extras
+  ./packages/servant-multipart-miso-drop-in-api
+  ./packages/servant-multipart-miso-drop-in-client
+  ./packages/test/servant-multipart-miso-drop-in-client-test-common
+  ./packages/test/servant-multipart-miso-drop-in-client-test-client
+
+if !(impl(ghcjs) || arch(javascript) || arch(wasm32))
+  packages:
+    ./packages/test/servant-multipart-miso-drop-in-client-test-server
 
 allow-newer:
-  all:base
+    all:base
+  , servant-multipart-client:servant-client-core
+  , servant-multipart:servant-server
 
 source-repository-package
   type: git
   location: https://github.com/dmjio/miso
   tag: 1.13.0
 
+source-repository-package
+  type: git
+  location: https://github.com/grcsolutions-au/servant
+  tag: e6b8f2a310facf393bb21d52506db5b2cf89094a
+  subdir:
+    servant
+    servant-client-core
+    servant-client
+    servant-server
+
 flags: +template-haskell
+

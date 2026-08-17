@@ -1,0 +1,46 @@
+cabal-version:      3.0
+name:               servant-miso-drop-in-api
+version:            0.2.1.0
+synopsis:           servant API compatibility layer for servant-miso-client
+description:        API integration between servant and miso
+homepage:           https://github.com/haskell-miso/servant-miso-client
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Clinton Mead (clintonmead@gmail.com)
+maintainer:         code@dmj.io
+category:           Web
+build-type:         Simple
+
+library
+  ghc-options:
+    -Weverything
+    -Werror
+    -Wno-missing-safe-haskell-mode
+    -Wno-implicit-prelude
+    -Wno-prepositive-qualified-module
+    -Wno-missing-kind-signatures
+    -Wno-missing-role-annotations
+    -Wno-safe
+    -Wno-unsafe
+    -Wno-all-missed-specialisations
+  exposed-modules:
+      Servant.API
+    , Miso.String.Compat
+  build-depends:
+      base
+    , servant
+  hs-source-dirs:
+    src
+  default-language:
+    Haskell2010
+  default-extensions:
+    PackageImports
+  if impl(ghcjs) || arch(javascript) || arch(wasm32)
+    build-depends:
+        miso
+      , servant-miso-client
+  else
+    build-depends:
+        text
+    cpp-options:
+      -DVANILLA

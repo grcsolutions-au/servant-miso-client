@@ -1,0 +1,50 @@
+cabal-version:      3.0
+name:               servant-miso-drop-in-client
+version:            0.2.1.0
+synopsis:           servant-client compatability layer for servant-miso-client
+description:        Client integration between servant and miso using the Fetch API
+homepage:           https://github.com/haskell-miso/servant-miso-client
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Clinton Mead (clintonmead@gmail.com)
+maintainer:         code@dmj.io
+category:           Web
+build-type:         Simple
+
+library
+  ghc-options: 
+    -Weverything
+    -Werror
+    -Wno-missing-safe-haskell-mode
+    -Wno-implicit-prelude
+    -Wno-prepositive-qualified-module
+    -Wno-missing-kind-signatures
+    -Wno-missing-role-annotations
+    -Wno-safe
+    -Wno-unsafe
+    -Wno-all-missed-specialisations
+  exposed-modules:
+      Servant.Client
+  build-depends:
+      base
+    , text
+  hs-source-dirs:
+    src
+  default-language:
+    Haskell2010
+  default-extensions:
+    PackageImports
+    TypeFamilies
+    UndecidableInstances
+  if impl(ghcjs) || arch(javascript) || arch(wasm32)
+    build-depends:
+        miso
+      , servant-miso-client
+  else
+    cpp-options:
+      -DVANILLA
+    build-depends:
+        async
+      , http-client
+      , servant-client
+
