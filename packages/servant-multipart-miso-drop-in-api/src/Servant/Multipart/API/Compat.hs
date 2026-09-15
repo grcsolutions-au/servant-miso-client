@@ -1,23 +1,24 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE TypeData #-}
+{-# LANGUAGE StandaloneKindSignatures #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# OPTIONS_GHC -Wno-unused-type-patterns #-}
 
 module Servant.Multipart.API.Compat
-  ( Tmp
-  , Mem
+  ( MultipartCompat
   ) where
 
-#ifdef VANILLA
-import Servant.Multipart.API (Mem, Tmp)
-#else
-import Miso.FFI (Blob)
 import Servant.Multipart.API (MultipartResult)
+import Data.Kind (Type)
 
-type data JsBlob
+#ifndef VANILLA
+import Miso.FFI (Blob)
+#endif
 
-type instance MultipartResult JsBlob = Blob
+type MultipartCompat :: Type -> Type
+type data MultipartCompat api
 
-type Tmp = JsBlob
-
-type Mem = JsBlob
+#ifdef VANILLA
+type instance MultipartResult (MultipartCompat api) = MultipartResult api
+#else
+type instance MultipartResult (MultipartCompat api) = Blob
 #endif

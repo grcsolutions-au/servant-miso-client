@@ -18,6 +18,7 @@ executable servant-multipart-miso-drop-in-client-test-server
     bytestring,
     servant-multipart-api,
     servant-multipart,
+    servant-multipart-miso-drop-in-server,
     servant-multipart-miso-drop-in-client-test-common,
     text,
     servant-server,

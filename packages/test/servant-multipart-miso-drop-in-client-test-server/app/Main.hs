@@ -7,6 +7,7 @@ import Data.Text (Text)
 import Servant
 import Servant.Multipart ()
 import Servant.Multipart.API (fdPayload)
+import Servant.Multipart.Server.Compat ()
 import Servant.Multipart.Miso.Test.UploadTypes
 
 uploadServer :: Server UploadAPI

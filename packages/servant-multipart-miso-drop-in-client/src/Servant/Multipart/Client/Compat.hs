@@ -8,8 +8,10 @@ module Servant.Multipart.Client.Compat
   )
 where
 
+import Servant.Multipart.API.Compat (MultipartCompat)
 #ifdef VANILLA
-import Servant.Multipart.Client (genBoundary)
+import Data.Proxy (Proxy(Proxy))
+import Servant.Multipart.Client (MultipartClient(..), genBoundary)
 #else
 import Control.Monad (forM_, void)
 import Data.Proxy (Proxy(Proxy))
@@ -34,14 +36,18 @@ import Servant.Multipart.API
   , iValue
   , inputs
   )
-import Servant.Multipart.API.Compat (Tmp)
 #endif
 
-#ifndef VANILLA
-genBoundary :: IO ()
-genBoundary = pure ()
+#ifdef VANILLA
+instance MultipartClient api => MultipartClient (MultipartCompat api) where
+  loadFile _ = loadFile (Proxy @api)
+#else
+data FakeBoundary = FakeBoundary
 
-multipartBody :: MultipartData Tmp -> IO JSVal
+genBoundary :: IO FakeBoundary
+genBoundary = pure FakeBoundary
+
+multipartBody :: MultipartData (MultipartCompat tag) -> IO JSVal
 multipartBody multipartData = do
   formData <- new (jsg "FormData") ([] :: [MisoString])
   forM_ (inputs multipartData) $ \inputPart ->
@@ -54,11 +60,11 @@ multipartBody multipartData = do
 
 instance
   ( HasClient api
-  , ToMultipart Tmp a
-  ) => HasClient (MultipartForm' mods Tmp a :> api) where
-  type ClientType (MultipartForm' mods Tmp a :> api) = ((), a) -> ClientType api
+  , ToMultipart (MultipartCompat tag) a
+  ) => HasClient (MultipartForm' mods (MultipartCompat tag) a :> api) where
+  type ClientType (MultipartForm' mods (MultipartCompat tag) a :> api) = (FakeBoundary, a) -> ClientType api
   toClientInternal _ req (_, body) =
     toClientInternal
       (Proxy @api)
-      (req { _reqBody = Just (multipartBody (toMultipart @Tmp body)) })
+      (req { _reqBody = Just (multipartBody (toMultipart @(MultipartCompat tag) body)) })
 #endif

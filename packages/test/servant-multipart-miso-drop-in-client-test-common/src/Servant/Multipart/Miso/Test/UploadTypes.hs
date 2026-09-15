@@ -24,17 +24,18 @@ import Servant.Multipart.API
   , MultipartData(MultipartData)
   , MultipartForm
   , ToMultipart(..)
+  , Tmp
   , fdFileName
   , lookupInput
   , lookupFile
   )
-import Servant.Multipart.API.Compat (Tmp)
+import Servant.Multipart.API.Compat (MultipartCompat)
 
 data UploadForm = UploadForm
   { title :: Text
   , description :: Text
   , attachmentFileName :: Text
-  , attachmentContents :: FileData Tmp
+  , attachmentContents :: FileData (MultipartCompat Tmp)
   }
   deriving stock (Generic)
 
@@ -58,12 +59,12 @@ instance MisoJSON.FromJSON UploadAck where
 instance MisoJSON.ToJSON UploadAck where
   toJSON = MisoJSON.genericToJSON MisoJSON.defaultOptions
 
-type UploadAPI = "upload" :> MultipartForm Tmp UploadForm :> Post '[JSON] UploadAck
+type UploadAPI = "upload" :> MultipartForm (MultipartCompat Tmp) UploadForm :> Post '[JSON] UploadAck
 
 testPort :: Int
 testPort = 8090
 
-instance ToMultipart Tmp UploadForm where
+instance ToMultipart (MultipartCompat Tmp) UploadForm where
   toMultipart UploadForm{..} = MultipartData
     [ Input "title" title
     , Input "description" description
@@ -71,7 +72,7 @@ instance ToMultipart Tmp UploadForm where
     [ attachmentContents
     ]
 
-instance FromMultipart Tmp UploadForm where
+instance FromMultipart (MultipartCompat Tmp) UploadForm where
   fromMultipart multipartData = do
     title <- lookupInput "title" multipartData
     description <- lookupInput "description" multipartData

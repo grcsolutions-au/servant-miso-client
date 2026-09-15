@@ -1,7 +1,7 @@
 cabal-version:      3.0
-name:               servant-multipart-miso-drop-in-client
+name:               servant-multipart-miso-drop-in-server
 version:            0.1.0.0
-synopsis:           Multipart client compatibility layer for servant-miso-client
+synopsis:           Multipart server compatibility layer for servant-miso-client
 license:            BSD-3-Clause
 license-file:       LICENSE
 author:             Clinton Mead (clintonmead@gmail.com)
@@ -23,9 +23,10 @@ library
     -Wno-unsafe
     -Wno-all-missed-specialisations
   exposed-modules:
-      Servant.Multipart.Client.Compat
+      Servant.Multipart.Server.Compat
   build-depends:
       base
+    , servant-multipart
     , servant-multipart-miso-drop-in-api
   hs-source-dirs:
     src
@@ -34,21 +35,10 @@ library
   default-extensions:
     FlexibleContexts
     FlexibleInstances
-    MultiParamTypeClasses
-    OverloadedStrings
     ScopedTypeVariables
-    TypeSynonymInstances
-    TypeFamilies
     TypeApplications
+    TypeFamilies
     TypeOperators
+    UndecidableInstances
   if impl(ghcjs) || arch(javascript) || arch(wasm32)
-    build-depends:
-        miso
-      , servant
-      , servant-multipart-api
-      , servant-miso-client
-  else
-    build-depends:
-        servant-multipart-client
-    cpp-options:
-      -DVANILLA
+    buildable: False

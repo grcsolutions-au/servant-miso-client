@@ -10,6 +10,7 @@ packages:
 
 if !(impl(ghcjs) || arch(javascript) || arch(wasm32))
   packages:
+    ./packages/servant-multipart-miso-drop-in-server
     ./packages/test/servant-multipart-miso-drop-in-client-test-server
 
 allow-newer:
