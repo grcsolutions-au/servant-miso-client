@@ -1,8 +1,8 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE ImportQualifiedPost #-}
-{-# LANGUAGE PackageImports #-}
+{-# LANGUAGE TypeData #-}
+{-# LANGUAGE TypeFamilies #-}
 
-module Servant.Multipart.API
+module Servant.Multipart.API.Compat
   ( module Reexported
 #ifndef VANILLA
   , Tmp
@@ -12,10 +12,10 @@ module Servant.Multipart.API
   ) where
 
 #ifdef VANILLA
-import "servant-multipart-api" Servant.Multipart.API as Reexported
+import Servant.Multipart.API as Reexported
 #else
-import "servant-multipart-api" Servant.Multipart.API as Reexported hiding (Tmp, Mem)
 import Miso.FFI (Blob)
+import Servant.Multipart.API as Reexported hiding (Tmp, Mem)
 
 type data JsBlob
 

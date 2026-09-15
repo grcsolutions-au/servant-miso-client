@@ -6,7 +6,7 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.Text (Text)
 import Servant
 import Servant.Multipart ()
-import Servant.Multipart.API (FileData(..))
+import Servant.Multipart.API.Compat (FileData(..))
 import Servant.Multipart.Miso.Test.UploadTypes
 
 uploadServer :: Server UploadAPI

@@ -11,7 +11,7 @@ module Servant.API.ContentTypes.Extra
 
 import Network.HTTP.Media (MediaType, (//), (/:))
 import Data.List.NonEmpty (NonEmpty((:|)))
-import Servant.API (MimeRender, MimeUnrender, Accept(contentTypes), PlainText)
+import Servant.API.Compat (MimeRender, MimeUnrender, Accept(contentTypes), PlainText)
 import Servant.API.ContentTypes.DerivingVia (MimeVia(MimeVia))
 import Miso.String.Compat (MisoString)
 

@@ -36,7 +36,6 @@ library
     Haskell2010
   default-extensions:
       DerivingVia
-    , PackageImports
   if !(impl(ghcjs) || arch(javascript) || arch(wasm32))
     cpp-options:
       -DVANILLA

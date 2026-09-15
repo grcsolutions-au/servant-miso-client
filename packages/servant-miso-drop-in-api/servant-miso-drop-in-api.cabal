@@ -24,7 +24,7 @@ library
     -Wno-unsafe
     -Wno-all-missed-specialisations
   exposed-modules:
-      Servant.API
+      Servant.API.Compat
     , Miso.String.Compat
   build-depends:
       base
@@ -33,8 +33,6 @@ library
     src
   default-language:
     Haskell2010
-  default-extensions:
-    PackageImports
   if impl(ghcjs) || arch(javascript) || arch(wasm32)
     build-depends:
         miso

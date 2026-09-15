@@ -6,11 +6,11 @@ module Main where
 import Data.Proxy (Proxy(..))
 import Data.Text (pack)
 import qualified Data.ByteString.Lazy.Char8 as LBS8
-import Servant.Multipart.API (FileData(..), MultipartResult, Tmp)
-import Servant.Multipart.Client (genBoundary)
+import Servant.Multipart.API.Compat (FileData(..), MultipartResult, Tmp)
+import Servant.Multipart.Client.Compat (genBoundary)
 import Servant.Multipart.Miso.Test.UploadTypes
-import Servant.Client (consoleError, consoleLog)
-import qualified Servant.Client as Client
+import Servant.Client.Compat (consoleError, consoleLog)
+import qualified Servant.Client.Compat as Client
 import qualified System.Exit as Exit
 
 #ifdef VANILLA
@@ -20,7 +20,7 @@ import System.IO (hClose, openTempFile)
 import Miso.DSL (jsg, new)
 import Miso.FFI (Blob(..))
 import Miso.String (MisoString, ms)
-import Servant.Multipart.Client ()
+import Servant.Multipart.Client.Compat ()
 #endif
 
 main :: IO ()

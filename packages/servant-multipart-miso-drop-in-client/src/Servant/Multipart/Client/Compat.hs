@@ -1,24 +1,18 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE PackageImports #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
 
-module Servant.Multipart.Client
-#ifdef VANILLA
-  ( module NativeMultipartClient
-  )
-#else
+module Servant.Multipart.Client.Compat
   ( genBoundary
   )
-#endif
 where
 
 #ifdef VANILLA
-import "servant-multipart-client" Servant.Multipart.Client as NativeMultipartClient
+import Servant.Multipart.Client (genBoundary)
 #else
-import Data.Proxy (Proxy(Proxy))
 import Control.Monad (forM_, void)
+import Data.Proxy (Proxy(Proxy))
 import Miso (JSVal)
 import Miso.DSL (jsg, new, toJSVal)
 import Miso.FFI (callFunction)
@@ -28,7 +22,7 @@ import Servant.Miso.Client
   ( HasClient (ClientType, toClientInternal)
   , Request (_reqBody)
   )
-import Servant.Multipart.API
+import Servant.Multipart.API.Compat
   ( FileData (FileData)
   , Input (Input)
   , JsBlob

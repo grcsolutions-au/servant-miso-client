@@ -23,7 +23,7 @@ library
     -Wno-unsafe
     -Wno-all-missed-specialisations
   exposed-modules:
-      Servant.Multipart.Client
+      Servant.Multipart.Client.Compat
   build-depends:
       base
   hs-source-dirs:

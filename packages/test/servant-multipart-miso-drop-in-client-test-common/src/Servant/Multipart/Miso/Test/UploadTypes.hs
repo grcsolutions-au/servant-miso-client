@@ -16,8 +16,8 @@ import GHC.Generics (Generic)
 import Numeric (showHex)
 import qualified Miso.JSON as MisoJSON
 import qualified Crypto.Hash.MD5 as MD5
-import Servant.API (JSON, Post, (:>))
-import Servant.Multipart.API
+import Servant.API.Compat (JSON, Post, (:>))
+import Servant.Multipart.API.Compat
   ( FileData(..)
   , FromMultipart(..)
   , Input(..)

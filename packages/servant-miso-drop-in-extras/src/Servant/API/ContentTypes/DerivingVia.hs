@@ -12,10 +12,10 @@ module Servant.API.ContentTypes.DerivingVia
 import Data.Coerce (coerce)
 import Data.Proxy (Proxy(Proxy))
 #ifdef VANILLA
-import Servant.API
+import Servant.API.Compat
   (Accept, MimeRender(mimeRender), MimeUnrender(mimeUnrender))
 #else
-import Servant.API
+import Servant.API.Compat
   (Accept, MimeRender(mimeRender), MimeUnrender(mimeUnrender, mimeUnrenderType))
 #endif
 
