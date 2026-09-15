@@ -19,6 +19,7 @@ executable servant-multipart-miso-drop-in-client-test-client
     base < 5,
     bytestring,
     text,
+    servant-multipart-api,
     servant-multipart-miso-drop-in-api,
     servant-multipart-miso-drop-in-client,
     servant-miso-drop-in-client,

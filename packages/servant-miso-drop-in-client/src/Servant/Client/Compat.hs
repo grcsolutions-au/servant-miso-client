@@ -1,6 +1,4 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# OPTIONS_GHC -Wno-missing-import-lists #-}
 
 module Servant.Client.Compat
   ( BaseUrl
@@ -30,9 +28,11 @@ import qualified Network.HTTP.Client as HttpClient
 import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
-import Control.Concurrent.MVar (MVar, newEmptyMVar, tryPutMVar, takeMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, takeMVar, tryPutMVar)
+import Control.Exception (Exception(displayException), throwIO)
+import Control.Monad (unless)
 import qualified Miso.FFI as MisoFFI
-import Miso.FFI (Response(..))
+import Miso.FFI (Response(body))
 import Miso.String (MisoString, ms)
 import qualified Servant.Miso.Client as MisoClient
 #endif
@@ -134,18 +134,29 @@ runClientMAsync
   -> IO (ClientAsync (Either ClientError a))
 runClientMAsync (NativeRequest request) = ClientAsync <$> async request
 #else
+
+data MisoRequestCallbackException = MisoRequestCallbackCalledMoreThanOnce
+  deriving stock (Show)
+
+instance Exception MisoRequestCallbackException where
+  displayException MisoRequestCallbackCalledMoreThanOnce =
+    "Miso request code called its callback more than once. This should never happen. This indicates a bug in the Miso request code."
+
 runClientMAsync
-  :: ((Response a -> IO ()) -> (Response MisoString -> IO ()) -> IO ())
+  :: forall a. ((Response a -> IO ()) -> (Response MisoString -> IO ()) -> IO ())
   -> IO (ClientAsync (Either ClientError a))
 runClientMAsync request = do
   result <- newEmptyMVar
+  let
+    putMVarOrThrow :: Either ClientError a -> IO ()
+    putMVarOrThrow value = do
+      success <- tryPutMVar result value
+      unless success $ throwIO MisoRequestCallbackCalledMoreThanOnce
   request
-    (\response -> do
-      _ <- tryPutMVar result (Right (body response))
-      pure ())
-    (\response -> do
-      _ <- tryPutMVar result (Left (ClientError response))
-      pure ())
+    -- Assuming `request` is not buggy it should only call one of these callbacks
+    -- and only once so whether we use `tryPutMVar` or
+    (\response -> putMVarOrThrow (Right (body response)))
+    (\response -> putMVarOrThrow (Left (ClientError response)))
   pure (ClientAsync result)
 #endif
 

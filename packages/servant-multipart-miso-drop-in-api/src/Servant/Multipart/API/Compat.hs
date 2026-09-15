@@ -3,19 +3,15 @@
 {-# LANGUAGE TypeFamilies #-}
 
 module Servant.Multipart.API.Compat
-  ( module Reexported
-#ifndef VANILLA
-  , Tmp
+  ( Tmp
   , Mem
-  , JsBlob
-#endif
   ) where
 
 #ifdef VANILLA
-import Servant.Multipart.API as Reexported
+import Servant.Multipart.API (Mem, Tmp)
 #else
 import Miso.FFI (Blob)
-import Servant.Multipart.API as Reexported hiding (Tmp, Mem)
+import Servant.Multipart.API (MultipartResult)
 
 type data JsBlob
 

@@ -17,15 +17,18 @@ import Numeric (showHex)
 import qualified Miso.JSON as MisoJSON
 import qualified Crypto.Hash.MD5 as MD5
 import Servant.API.Compat (JSON, Post, (:>))
-import Servant.Multipart.API.Compat
-  ( FileData(..)
+import Servant.Multipart.API
+  ( FileData
   , FromMultipart(..)
-  , Input(..)
-  , MultipartData(..)
+  , Input(Input)
+  , MultipartData(MultipartData)
   , MultipartForm
-  , Tmp
   , ToMultipart(..)
+  , fdFileName
+  , lookupInput
+  , lookupFile
   )
+import Servant.Multipart.API.Compat (Tmp)
 
 data UploadForm = UploadForm
   { title :: Text
@@ -70,23 +73,11 @@ instance ToMultipart Tmp UploadForm where
 
 instance FromMultipart Tmp UploadForm where
   fromMultipart multipartData = do
-    title <- lookupField "title" multipartData
-    description <- lookupField "description" multipartData
+    title <- lookupInput "title" multipartData
+    description <- lookupInput "description" multipartData
     attachmentContents <- lookupFile "attachment" multipartData
     let attachmentFileName = fdFileName attachmentContents
     pure UploadForm{..}
-
-lookupField :: Text -> MultipartData tag -> Either String Text
-lookupField fieldName (MultipartData inputs _) =
-  case [ value | Input name value <- inputs, name == fieldName ] of
-    value : _ -> Right value
-    [] -> Left ("missing field: " <> show fieldName)
-
-lookupFile :: Text -> MultipartData tag -> Either String (FileData tag)
-lookupFile fieldName (MultipartData _ files) =
-  case [ file | file@FileData{fdInputName = name} <- files, name == fieldName ] of
-    file : _ -> Right file
-    [] -> Left ("missing file: " <> show fieldName)
 
 attachmentChecksum :: LBS8.ByteString -> Text
 attachmentChecksum = Text.pack . concatMap byteToHex . BS.unpack . MD5.hashlazy

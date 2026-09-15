@@ -22,15 +22,19 @@ import Servant.Miso.Client
   ( HasClient (ClientType, toClientInternal)
   , Request (_reqBody)
   )
-import Servant.Multipart.API.Compat
-  ( FileData (FileData)
-  , Input (Input)
-  , JsBlob
-  , MultipartData (MultipartData)
+import Servant.Multipart.API
+  ( MultipartData
   , MultipartForm'
   , ToMultipart (toMultipart)
-  , Tmp
+  , fdFileName
+  , fdInputName
+  , fdPayload
+  , files
+  , iName
+  , iValue
+  , inputs
   )
+import Servant.Multipart.API.Compat (Tmp)
 #endif
 
 #ifndef VANILLA
@@ -38,23 +42,23 @@ genBoundary :: IO ()
 genBoundary = pure ()
 
 multipartBody :: MultipartData Tmp -> IO JSVal
-multipartBody (MultipartData inputParts fileParts) = do
+multipartBody multipartData = do
   formData <- new (jsg "FormData") ([] :: [MisoString])
-  forM_ inputParts $ \(Input name fieldValue) ->
-    void $ callFunction formData "append" (ms name, ms fieldValue)
-  forM_ fileParts $ \(FileData name fileName _ payload) -> do
-    payloadBytes <- toJSVal payload
-    file <- new (jsg "File") ([payloadBytes], ms fileName)
-    void $ callFunction formData "append" (ms name, file)
+  forM_ (inputs multipartData) $ \inputPart ->
+    void $ callFunction formData "append" (ms (iName inputPart), ms (iValue inputPart))
+  forM_ (files multipartData) $ \filePart -> do
+    payloadBytes <- toJSVal (fdPayload filePart)
+    file <- new (jsg "File") ([payloadBytes], ms (fdFileName filePart))
+    void $ callFunction formData "append" (ms (fdInputName filePart), file)
   pure formData
 
 instance
   ( HasClient api
-  , ToMultipart JsBlob a
-  ) => HasClient (MultipartForm' mods JsBlob a :> api) where
-  type ClientType (MultipartForm' mods JsBlob a :> api) = ((), a) -> ClientType api
+  , ToMultipart Tmp a
+  ) => HasClient (MultipartForm' mods Tmp a :> api) where
+  type ClientType (MultipartForm' mods Tmp a :> api) = ((), a) -> ClientType api
   toClientInternal _ req (_, body) =
     toClientInternal
       (Proxy @api)
-      (req { _reqBody = Just (multipartBody (toMultipart @JsBlob body)) })
+      (req { _reqBody = Just (multipartBody (toMultipart @Tmp body)) })
 #endif

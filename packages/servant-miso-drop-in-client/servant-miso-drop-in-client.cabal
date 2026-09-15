@@ -33,6 +33,9 @@ library
   default-language:
     Haskell2010
   default-extensions:
+    DerivingStrategies
+    FlexibleContexts
+    ScopedTypeVariables
     TypeFamilies
     UndecidableInstances
   if impl(ghcjs) || arch(javascript) || arch(wasm32)

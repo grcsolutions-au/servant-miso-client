@@ -24,8 +24,17 @@ source-repository-package
 
 source-repository-package
   type: git
-  location: https://github.com/grcsolutions-au/servant
-  tag: e6b8f2a310facf393bb21d52506db5b2cf89094a
+  location: https://github.com/clintonmead/servant-multipart
+  tag: 412e01bd2a33650c1cb0213d14da433d0571e743
+  subdir:
+    servant-multipart
+    servant-multipart-api
+    servant-multipart-client
+
+source-repository-package
+  type: git
+  location: https://github.com/haskell-servant/servant
+  tag: 4f9e7c0dc76bf6ea0423d4d7b80d6a9acd6d31a6
   subdir:
     servant
     servant-client-core
