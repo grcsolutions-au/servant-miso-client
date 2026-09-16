@@ -14,8 +14,15 @@ import Servant.Multipart.API.Compat (MultipartCompat)
 import Servant.Multipart.API (MultipartForm')
 
 #ifdef VANILLA
-import Servant.Client.Core (HasClient(..), RunClient)
-import Servant.Multipart.Client (genBoundary)
+import qualified Data.ByteString.Lazy as LBS
+import Servant.Client.Core (HasClient(..))
+import Servant.Multipart.API (ToMultipart)
+import Servant.Multipart.Client
+  ( MultipartClient(..)
+  , genBoundary
+  , genericClientWithRoute
+  , genericHoistClientMonad
+  )
 #else
 import Control.Monad (forM_, void)
 import Miso (JSVal)
@@ -28,7 +35,7 @@ import Servant.Miso.Client
   )
 import Servant.Multipart.API
   ( MultipartData
-  , ToMultipart (toMultipart)
+  , ToMultipart(toMultipart)
   , fdFileName
   , fdInputName
   , fdPayload
@@ -40,25 +47,18 @@ import Servant.Multipart.API
 #endif
 
 #ifdef VANILLA
-instance
-  ( RunClient m
-  , HasClient m api
-  ) => HasClient m (MultipartCompat api) where
-  type Client m (MultipartCompat api) = Client m api
-  clientWithRoute pm _ =
-    clientWithRoute pm (Proxy @api)
-  hoistClientMonad pm _ =
-    hoistClientMonad pm (Proxy @api)
+instance MultipartClient tag => MultipartClient (MultipartCompat tag) where
+  loadFile _ = loadFile (Proxy @tag)
 
 instance
-  ( HasClient m (MultipartForm' mods tag a :> api)
+  ( MultipartClient tag
+  , ToMultipart (MultipartCompat tag) a
+  , HasClient m api
   ) => HasClient m (MultipartForm' mods (MultipartCompat tag) a :> api) where
   type Client m (MultipartForm' mods (MultipartCompat tag) a :> api) =
-    Client m (MultipartForm' mods tag a :> api)
-  clientWithRoute pm _ =
-    clientWithRoute pm (Proxy @(MultipartForm' mods tag a :> api))
-  hoistClientMonad pm _ =
-    hoistClientMonad pm (Proxy @(MultipartForm' mods tag a :> api))
+    (LBS.ByteString, a) -> Client m api
+  clientWithRoute = genericClientWithRoute
+  hoistClientMonad = genericHoistClientMonad
 
 #else
 data FakeBoundary = FakeBoundary

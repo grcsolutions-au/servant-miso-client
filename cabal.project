@@ -7,12 +7,12 @@ packages:
   ./packages/servant-multipart-miso-drop-in-client
   ./packages/test/servant-multipart-miso-drop-in-client-test-common
   ./packages/test/servant-multipart-miso-drop-in-client-test-client
-  ../servant-multipart/servant-multipart-client
 
 if !(impl(ghcjs) || arch(javascript) || arch(wasm32))
   packages:
     ./packages/servant-multipart-miso-drop-in-server
     ./packages/test/servant-multipart-miso-drop-in-client-test-server
+    ../servant-multipart/servant-multipart-client
 
 allow-newer:
     all:base

@@ -50,7 +50,8 @@ library
       , servant-miso-client
   else
     build-depends:
-        servant
+        bytestring
+      , servant
       , servant-client-core
       , servant-multipart-api
       , servant-multipart-client
