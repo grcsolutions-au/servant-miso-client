@@ -23,8 +23,6 @@ library
   build-depends:
     aeson,
     base < 5,
-    bytestring,
-    cryptohash-md5,
     miso,
     servant-miso-drop-in-api,
     servant-multipart-api,

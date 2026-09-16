@@ -34,7 +34,7 @@ fixtureFileContents :: LBS8.ByteString
 fixtureFileContents = LBS8.pack "multipart file contents"
 
 expectedAck :: UploadAck
-expectedAck = UploadAck "alpha" "beta" "fixture.txt" (attachmentChecksum fixtureFileContents)
+expectedAck = UploadAck "alpha" "beta" "fixture.txt" (pack (LBS8.unpack fixtureFileContents))
 
 expectedUpload :: IO UploadForm
 #ifdef VANILLA

@@ -2,8 +2,9 @@ module Main where
 
 import Control.Monad.IO.Class (liftIO)
 import Network.Wai.Handler.Warp (run)
-import qualified Data.ByteString.Lazy as LBS
+import qualified Data.ByteString.Lazy.Char8 as LBS8
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Servant
 import Servant.Multipart ()
 import Servant.Multipart.API (fdPayload)
@@ -12,16 +13,16 @@ import Servant.Multipart.Miso.Test.UploadTypes
 
 uploadServer :: Server UploadAPI
 uploadServer UploadForm{..} = do
-    receivedAttachmentChecksum <- liftIO (attachmentChecksumFile (fdPayload attachmentContents))
+    receivedAttachmentContents <- liftIO (attachmentContentsFile (fdPayload attachmentContents))
     pure UploadAck
       { receivedTitle = title
       , receivedDescription = description
       , receivedAttachmentFileName = attachmentFileName
-      , receivedAttachmentChecksum = receivedAttachmentChecksum
+      , receivedAttachmentContents = receivedAttachmentContents
       }
 
-attachmentChecksumFile :: FilePath -> IO Text
-attachmentChecksumFile filePath = attachmentChecksum <$> LBS.readFile filePath
+attachmentContentsFile :: FilePath -> IO Text
+attachmentContentsFile filePath = Text.pack . LBS8.unpack <$> LBS8.readFile filePath
 
 app :: Application
 app = serve (Proxy @UploadAPI) uploadServer
