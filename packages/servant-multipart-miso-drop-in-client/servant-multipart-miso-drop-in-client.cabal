@@ -44,11 +44,15 @@ library
   if impl(ghcjs) || arch(javascript) || arch(wasm32)
     build-depends:
         miso
+      , servant-multipart-miso-drop-in-api
       , servant
       , servant-multipart-api
       , servant-miso-client
   else
     build-depends:
-        servant-multipart-client
+        servant
+      , servant-client-core
+      , servant-multipart-api
+      , servant-multipart-client
     cpp-options:
       -DVANILLA

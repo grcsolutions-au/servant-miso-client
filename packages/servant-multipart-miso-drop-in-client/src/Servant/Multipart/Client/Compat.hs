@@ -8,25 +8,26 @@ module Servant.Multipart.Client.Compat
   )
 where
 
-import Servant.Multipart.API.Compat (MultipartCompat)
-#ifdef VANILLA
 import Data.Proxy (Proxy(Proxy))
-import Servant.Multipart.Client (MultipartClient(..), genBoundary)
+import Servant.API ((:>))
+import Servant.Multipart.API.Compat (MultipartCompat)
+import Servant.Multipart.API (MultipartForm')
+
+#ifdef VANILLA
+import Servant.Client.Core (HasClient(..), RunClient)
+import Servant.Multipart.Client (genBoundary)
 #else
 import Control.Monad (forM_, void)
-import Data.Proxy (Proxy(Proxy))
 import Miso (JSVal)
 import Miso.DSL (jsg, new, toJSVal)
 import Miso.FFI (callFunction)
 import Miso.String (MisoString, ms)
-import Servant.API ((:>))
 import Servant.Miso.Client
   ( HasClient (ClientType, toClientInternal)
   , Request (_reqBody)
   )
 import Servant.Multipart.API
   ( MultipartData
-  , MultipartForm'
   , ToMultipart (toMultipart)
   , fdFileName
   , fdInputName
@@ -39,8 +40,26 @@ import Servant.Multipart.API
 #endif
 
 #ifdef VANILLA
-instance MultipartClient api => MultipartClient (MultipartCompat api) where
-  loadFile _ = loadFile (Proxy @api)
+instance
+  ( RunClient m
+  , HasClient m api
+  ) => HasClient m (MultipartCompat api) where
+  type Client m (MultipartCompat api) = Client m api
+  clientWithRoute pm _ =
+    clientWithRoute pm (Proxy @api)
+  hoistClientMonad pm _ =
+    hoistClientMonad pm (Proxy @api)
+
+instance
+  ( HasClient m (MultipartForm' mods tag a :> api)
+  ) => HasClient m (MultipartForm' mods (MultipartCompat tag) a :> api) where
+  type Client m (MultipartForm' mods (MultipartCompat tag) a :> api) =
+    Client m (MultipartForm' mods tag a :> api)
+  clientWithRoute pm _ =
+    clientWithRoute pm (Proxy @(MultipartForm' mods tag a :> api))
+  hoistClientMonad pm _ =
+    hoistClientMonad pm (Proxy @(MultipartForm' mods tag a :> api))
+
 #else
 data FakeBoundary = FakeBoundary
 
