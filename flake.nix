@@ -9,10 +9,11 @@
       let
         pkgs = inputs.miso.inputs.nixpkgs.legacyPackages.${system};
         misoDevShells = inputs.miso.devShells.${system};
+        testScript = pkgs.writeShellScriptBin "run-tests" (builtins.readFile ./scripts/run-tests);
         mkShell = shellInputs:
           pkgs.mkShell {
             inputsFrom = shellInputs;
-            packages = [ pkgs.zlib ];
+            packages = [ pkgs.zlib testScript ];
             shellHook = ''
               export MISO=${inputs.miso}
             '';

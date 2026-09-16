@@ -154,7 +154,8 @@ runClientMAsync request = do
       unless success $ throwIO MisoRequestCallbackCalledMoreThanOnce
   request
     -- Assuming `request` is not buggy it should only call one of these callbacks
-    -- and only once so whether we use `tryPutMVar` or
+    -- and only once. That's why we throw (above) if 'tryPutMVar' ever fails.
+    -- It never should fail so so if it does it's a bug.
     (\response -> putMVarOrThrow (Right (body response)))
     (\response -> putMVarOrThrow (Left (ClientError response)))
   pure (ClientAsync result)
@@ -174,7 +175,7 @@ clientWithEnv (ClientEnv env) api =
   NativeServantClient.hoistClient api (nativeRunClientM env)
     (NativeServantClient.client api)
 #else
-clientWithEnv (ClientEnv (BaseUrl url)) api = MisoClient.toClient url api
+clientWithEnv (ClientEnv (BaseUrl url)) = MisoClient.toClient url
 #endif
 
 await :: ClientAsync a -> IO a
