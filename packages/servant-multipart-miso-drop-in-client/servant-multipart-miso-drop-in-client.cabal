@@ -26,6 +26,9 @@ library
       Servant.Multipart.Client.Compat
   build-depends:
       base
+    , bytestring
+    , servant
+    , servant-multipart-api
     , servant-multipart-miso-drop-in-api
   hs-source-dirs:
     src
@@ -44,16 +47,10 @@ library
   if impl(ghcjs) || arch(javascript) || arch(wasm32)
     build-depends:
         miso
-      , servant-multipart-miso-drop-in-api
-      , servant
-      , servant-multipart-api
       , servant-miso-client
   else
     build-depends:
-        bytestring
-      , servant
       , servant-client-core
-      , servant-multipart-api
       , servant-multipart-client
     cpp-options:
       -DVANILLA

@@ -8,7 +8,7 @@ import Data.Text (pack)
 import qualified Data.ByteString.Lazy.Char8 as LBS8
 import Servant.Multipart.API (FileData(FileData), MultipartResult, Tmp)
 import Servant.Multipart.API.Compat (MultipartCompat)
-import Servant.Multipart.Client.Compat (genBoundary)
+import Servant.Multipart.Client.Compat (withBoundary)
 import Servant.Multipart.Miso.Test.UploadTypes
 import Servant.Client.Compat (consoleError, consoleLog)
 import qualified Servant.Client.Compat as Client
@@ -61,11 +61,14 @@ uploadForm payload = UploadForm
 runClientTest :: IO ()
 runClientTest = do
   upload <- expectedUpload
+  requestBody <- withBoundary upload
   manager <- Client.newManager
   let baseUrl = Client.mkBaseUrl Client.Http "127.0.0.1" testPort ""
       clientEnv = Client.mkClientEnv manager baseUrl
-  boundary <- genBoundary
-  let request = Client.clientWithEnv clientEnv (Proxy @UploadAPI) (boundary, upload)
+      request = Client.clientWithEnv
+        clientEnv
+        (Proxy @UploadAPI)
+        requestBody
   asyncRequest <- Client.runClientMAsync request
   result <- Client.await asyncRequest
   case result of
