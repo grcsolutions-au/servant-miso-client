@@ -28,7 +28,7 @@ import qualified Network.HTTP.Client as HttpClient
 import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
-import Control.Concurrent.MVar (MVar, newEmptyMVar, takeMVar, tryPutMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
 import Control.Exception (Exception(displayException), throwIO)
 import Control.Monad (unless)
 import qualified Miso.FFI as MisoFFI
@@ -182,5 +182,5 @@ await :: ClientAsync a -> IO a
 #ifdef VANILLA
 await (ClientAsync asyncRequest) = wait asyncRequest
 #else
-await (ClientAsync result) = takeMVar result
+await (ClientAsync result) = readMVar result
 #endif
