@@ -6,6 +6,7 @@ module Servant.Client.Compat
   , ClientAsync
   , ClientEnv
   , ClientError
+  , ClientRequest
   , Manager
   , Scheme(..)
   , await
@@ -15,6 +16,7 @@ module Servant.Client.Compat
   , mkBaseUrl
   , mkClientEnv
   , newManager
+  , runClient
   , runClientMAsync
   ) where
 
@@ -29,8 +31,7 @@ import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
-import Control.Exception (Exception(displayException), throwIO)
-import Control.Monad (unless)
+import Control.Monad (void)
 import qualified Miso.FFI as MisoFFI
 import Miso.FFI (Response(body))
 import Miso.String (MisoString, ms)
@@ -52,9 +53,9 @@ newtype ClientAsync a = ClientAsync (Async a)
 
 newtype ClientError = ClientError NativeServantClient.ClientError
 
-newtype NativeRequest a = NativeRequest (IO (Either ClientError a))
+newtype ClientRequest a = ClientRequest (IO (Either ClientError a))
 
-type Client api = NativeServantClient.Client NativeRequest api
+type Client api = NativeServantClient.Client ClientRequest api
 #else
 newtype Manager = Manager ()
 
@@ -65,6 +66,11 @@ newtype ClientEnv = ClientEnv BaseUrl
 newtype ClientAsync a = ClientAsync (MVar a)
 
 newtype ClientError = ClientError (Response MisoString)
+
+type ClientRequest a =
+  (Response a -> IO ())
+  -> (Response MisoString -> IO ())
+  -> IO ()
 
 type Client api = MisoClient.ClientType api
 #endif
@@ -121,26 +127,19 @@ mkClientEnv _ = ClientEnv
 nativeRunClientM
   :: NativeServantClient.ClientEnv
   -> NativeServantClient.ClientM a
-  -> NativeRequest a
+  -> ClientRequest a
 nativeRunClientM env request = do
-  NativeRequest $ do
+  ClientRequest $ do
     result <- NativeServantClient.runClientM request env
     pure $ case result of
       Left error_ -> Left (ClientError error_)
       Right value -> Right value
 
 runClientMAsync
-  :: NativeRequest a
+  :: ClientRequest a
   -> IO (ClientAsync (Either ClientError a))
-runClientMAsync (NativeRequest request) = ClientAsync <$> async request
+runClientMAsync (ClientRequest request) = ClientAsync <$> async request
 #else
-
-data MisoRequestCallbackException = MisoRequestCallbackCalledMoreThanOnce
-  deriving stock (Show)
-
-instance Exception MisoRequestCallbackException where
-  displayException MisoRequestCallbackCalledMoreThanOnce =
-    "Miso request code called its callback more than once. This should never happen. This indicates a bug in the Miso request code."
 
 runClientMAsync
   :: forall a. ((Response a -> IO ()) -> (Response MisoString -> IO ()) -> IO ())
@@ -159,6 +158,13 @@ runClientMAsync request = do
     (\response -> putMVarOrThrow (Right (body response)))
     (\response -> putMVarOrThrow (Left (ClientError response)))
   pure (ClientAsync result)
+#endif
+
+runClient :: ClientRequest a -> IO (Either ClientError a)
+#ifdef VANILLA
+runClient (ClientRequest request) = request
+#else
+runClient request = await =<< runClientMAsync request
 #endif
 
 clientWithEnv ::
