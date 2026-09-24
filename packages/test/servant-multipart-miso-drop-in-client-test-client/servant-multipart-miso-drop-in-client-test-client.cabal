@@ -26,7 +26,7 @@ executable servant-multipart-miso-drop-in-client-test-client
     servant-multipart-miso-drop-in-client-test-common
   if impl(ghcjs) || arch(javascript) || arch(wasm32)
     build-depends:
-      miso,
+      miso >= 0.14,
   else
     cpp-options:
       -DVANILLA

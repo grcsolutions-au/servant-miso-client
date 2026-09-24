@@ -20,18 +20,21 @@ module Servant.Client.Compat
   , runClientMAsync
   ) where
 
+
 import Data.Proxy (Proxy)
 import Data.Text (Text)
 
 #ifdef VANILLA
 import Control.Concurrent.Async (Async, async, wait)
+import qualified Data.Bifunctor as Bifunctor
 import qualified Data.Text.IO as TextIO
 import qualified Network.HTTP.Client as HttpClient
 import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
-import Control.Monad (void)
+import Control.Exception (Exception(displayException), throwIO)
+import Control.Monad (unless)
 import qualified Miso.FFI as MisoFFI
 import Miso.FFI (Response(body))
 import Miso.String (MisoString, ms)
@@ -44,35 +47,54 @@ data Scheme
 
 #ifdef VANILLA
 newtype Manager = Manager HttpClient.Manager
-
-newtype BaseUrl = BaseUrl NativeServantClient.BaseUrl
-
-newtype ClientEnv = ClientEnv NativeServantClient.ClientEnv
-
-newtype ClientAsync a = ClientAsync (Async a)
-
-newtype ClientError = ClientError NativeServantClient.ClientError
-
-newtype ClientRequest a = ClientRequest (IO (Either ClientError a))
-
-type Client api = NativeServantClient.Client ClientRequest api
 #else
-newtype Manager = Manager ()
+data Manager = Manager
+#endif
 
-newtype BaseUrl = BaseUrl MisoString
+newtype BaseUrl 
+#ifdef VANILLA
+  = BaseUrl NativeServantClient.BaseUrl
+#else
+  = BaseUrl MisoString
+#endif
 
-newtype ClientEnv = ClientEnv BaseUrl
+newtype ClientEnv
+#ifdef VANILLA
+  = ClientEnv NativeServantClient.ClientEnv
+#else
+  = ClientEnv BaseUrl
+#endif
 
-newtype ClientAsync a = ClientAsync (MVar a)
+newtype ClientAsync a
+#ifdef VANILLA
+  = ClientAsync (Async a)
+#else
+  = ClientAsync (MVar a)
+#endif
 
-newtype ClientError = ClientError (Response MisoString)
+newtype ClientError
+#ifdef VANILLA
+  = ClientError NativeServantClient.ClientError
+#else
+  = ClientError (Response MisoString)
+#endif
 
+#ifdef VANILLA
+-- We must make this a newtype so we can pass it as a parameter to 
+-- the Client type from Servant
+newtype ClientRequest a = ClientRequest (IO (Either ClientError a))
+#else
 type ClientRequest a =
   (Response a -> IO ())
   -> (Response MisoString -> IO ())
   -> IO ()
+#endif
 
-type Client api = MisoClient.ClientType api
+type Client api
+#ifdef VANILLA
+  = NativeServantClient.Client ClientRequest api
+#else
+  = MisoClient.ClientType api
 #endif
 
 consoleLog :: Text -> IO ()
@@ -93,17 +115,13 @@ newManager :: IO Manager
 #ifdef VANILLA
 newManager = Manager <$> HttpClient.newManager HttpClient.defaultManagerSettings
 #else
-newManager = pure (Manager ())
+newManager = pure Manager
 #endif
 
 mkBaseUrl :: Scheme -> String -> Int -> String -> BaseUrl
 #ifdef VANILLA
 mkBaseUrl scheme host port path =
-  BaseUrl $ NativeServantClient.BaseUrl
-    (nativeScheme scheme)
-    host
-    port
-    path
+  BaseUrl $ NativeServantClient.BaseUrl (nativeScheme scheme) host port path
   where
     nativeScheme Http = NativeServantClient.Http
     nativeScheme Https = NativeServantClient.Https
@@ -128,18 +146,22 @@ nativeRunClientM
   :: NativeServantClient.ClientEnv
   -> NativeServantClient.ClientM a
   -> ClientRequest a
-nativeRunClientM env request = do
-  ClientRequest $ do
-    result <- NativeServantClient.runClientM request env
-    pure $ case result of
-      Left error_ -> Left (ClientError error_)
-      Right value -> Right value
+nativeRunClientM env request =
+  ClientRequest $
+    Bifunctor.first ClientError <$> NativeServantClient.runClientM request env
 
 runClientMAsync
   :: ClientRequest a
   -> IO (ClientAsync (Either ClientError a))
 runClientMAsync (ClientRequest request) = ClientAsync <$> async request
 #else
+
+data MisoRequestCallbackException = MisoRequestCallbackCalledMoreThanOnce
+  deriving stock (Show)
+
+instance Exception MisoRequestCallbackException where
+  displayException MisoRequestCallbackCalledMoreThanOnce =
+    "Miso request code called its callback more than once. This should never happen. This indicates a bug in the Miso request code."
 
 runClientMAsync
   :: forall a. ((Response a -> IO ()) -> (Response MisoString -> IO ()) -> IO ())

@@ -38,7 +38,7 @@ library
     TypeFamilies
   if impl(ghcjs) || arch(javascript) || arch(wasm32)
     build-depends:
-      miso
+      miso >= 0.14
   else
     cpp-options:
       -DVANILLA

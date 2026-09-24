@@ -35,7 +35,7 @@ library
     Haskell2010
   if impl(ghcjs) || arch(javascript) || arch(wasm32)
     build-depends:
-        miso
+        miso >= 0.14
       , servant-miso-client
   else
     build-depends:

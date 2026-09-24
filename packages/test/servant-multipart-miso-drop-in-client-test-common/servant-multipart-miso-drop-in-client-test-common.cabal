@@ -23,7 +23,7 @@ library
   build-depends:
     aeson,
     base < 5,
-    miso,
+    miso >= 0.14,
     servant-miso-drop-in-api,
     servant-multipart-api,
     servant-multipart-miso-drop-in-api,
