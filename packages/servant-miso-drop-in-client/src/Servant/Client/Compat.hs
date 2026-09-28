@@ -191,13 +191,13 @@ applyRetryPolicy (RetryPolicy initialAcc handleError handleSuccess handleExcepti
       Right value -> pure (handleSuccess value)
 #endif
 
-runClientAsync :: forall m a b. RetryPolicy m a b -> ClientRequest a -> IO (ClientAsync (m b))
+runClientAsync :: forall m a b. MonadIO m => RetryPolicy m a b -> ClientRequest a -> m (ClientAsync (m b))
 #ifdef VANILLA
 runClientAsync policy (ClientRequest request) =
-  ClientAsync <$> async (applyRetryPolicy policy request)
+  liftIO $ ClientAsync <$> async (applyRetryPolicy policy request)
 #else
 
-runClientAsync (RetryPolicy initialAcc handleError handleSuccess handleException) request = do
+runClientAsync (RetryPolicy initialAcc handleError handleSuccess handleException) request = liftIO $ do
   result <- newEmptyMVar
   let
     complete :: m b -> IO ()
@@ -222,7 +222,7 @@ runClient :: MonadIO m => RetryPolicy m a b -> ClientRequest a -> m b
 #ifdef VANILLA
 runClient policy (ClientRequest request) = liftIO (applyRetryPolicy policy request) >>= id
 #else
-runClient policy request = awaitClient =<< liftIO (runClientAsync policy request)
+runClient policy request = awaitClient =<< runClientAsync policy request
 #endif
 
 clientWithEnv ::

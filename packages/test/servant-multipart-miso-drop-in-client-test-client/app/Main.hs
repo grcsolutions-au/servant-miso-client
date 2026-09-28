@@ -3,9 +3,9 @@
 
 module Main where
 
-import Control.Monad (unless)
+import Control.Monad (unless, void)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
+import Control.Monad.Trans.Except (ExceptT, catchE, runExceptT, throwE)
 import Data.Proxy (Proxy(..))
 import Data.Text (Text, pack)
 import qualified Data.ByteString.Lazy.Char8 as LBS8
@@ -28,7 +28,12 @@ import Miso.String (MisoString, ms)
 #endif
 
 main :: IO ()
-main = runClientTest
+main = do
+  result <- runExceptT runClientTest
+  case result of
+    Left err ->
+      failTest ("client request failed with HTTP status " <> pack (show (Client.clientErrorStatus err)))
+    Right () -> pure ()
 
 #ifdef wasm32_HOST_ARCH
 foreign export javascript "hs_start" main :: IO ()
@@ -71,40 +76,28 @@ retryExcept = Client.RetryPolicy (0 :: Int) handleError pure onException
         else Right (throwE err)
     onException _ = liftIO (failTest "unexpected request exception")
 
-runClientTest :: IO ()
+runClientTest :: ExceptT Client.ClientError IO ()
 runClientTest = do
-  upload <- expectedUpload
-  requestBody <- withBoundary upload
-  manager <- Client.newManager
+  upload <- liftIO expectedUpload
+  requestBody <- liftIO (withBoundary upload)
+  manager <- liftIO Client.newManager
   let baseUrl = Client.mkBaseUrl Client.Http "127.0.0.1" testPort ""
       clientEnv = Client.mkClientEnv manager baseUrl
       uploadRequest :<|> retryRequest = Client.clientWithEnv clientEnv (Proxy @TestAPI)
       noRetry = Client.noRetry throwE pure (\_ -> liftIO (failTest "unexpected request exception"))
   asyncRequest <- Client.runClientAsync noRetry (uploadRequest requestBody)
-  result <- runExceptT (Client.awaitClient asyncRequest)
-  case result of
-    Right response
-      | response == expectedAck -> pure ()
-      | otherwise ->
-          failTest ("unexpected response: " <> pack (show response))
-    Left _ ->
-      failTest "upload request failed"
+  response <- Client.awaitClient asyncRequest
+  liftIO $ expect (response == expectedAck)
+    ("unexpected response: " <> pack (show response))
 
   retried <- Client.runClientAsync retryExcept (retryRequest 2)
-  first <- runExceptT (Client.awaitClient retried)
-  second <- runExceptT (Client.awaitClient retried)
-  case (first, second) of
-    (Right 3, Right 3) -> pure ()
-    _ -> failTest "retry result changed across awaits"
-  nextAttempt <- runExceptT (Client.runClient noRetry (retryRequest 2))
-  case nextAttempt of
-    Right 4 -> pure ()
-    _ -> failTest "awaiting repeated the HTTP request"
+  first <- Client.awaitClient retried
+  second <- Client.awaitClient retried
+  liftIO $ expect (first == 3 && second == 3) "retry result changed across awaits"
+  nextAttempt <- Client.runClient noRetry (retryRequest 2)
+  liftIO $ expect (nextAttempt == 4) "awaiting repeated the HTTP request"
 
-  exhausted <- runExceptT (Client.runClient retryExcept (retryRequest 20))
-  case exhausted of
-    Left err -> expect (Client.clientErrorStatus err == Just 503) "unexpected retry failure"
-    Right _ -> failTest "retry limit was ignored"
+  expectStatus503 (Client.runClient retryExcept (retryRequest 20))
   let diagnostic = Client.RetryPolicy (0 :: Int)
         (\retries err -> pure $ if retries < 1
           then Left (retries + 1)
@@ -112,31 +105,30 @@ runClientTest = do
         (\value -> pure (value, Nothing))
         (\_ -> liftIO (failTest "unexpected request exception"))
         :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int (Int, Maybe Int)
-  stopped <- runExceptT (Client.runClient diagnostic (retryRequest 21))
-  case stopped of
-    Right (2, Just 503) -> pure ()
-    _ -> failTest "policy did not use retry state and error"
+  stopped <- Client.runClient diagnostic (retryRequest 21)
+  liftIO $ expect (stopped == (2, Just 503)) "policy did not use retry state and error"
 
-  immediate <- runExceptT (Client.runClient noRetry (retryRequest 22))
-  case immediate of
-    Left err -> expect (Client.clientErrorStatus err == Just 503) "noRetry failed incorrectly"
-    Right _ -> failTest "noRetry unexpectedly retried"
-  direct <- runExceptT (Client.runClient noRetry (retryRequest 0))
-  case direct of
-    Right 1 -> pure ()
-    _ -> failTest "noRetry success failed"
+  expectStatus503 (Client.runClient noRetry (retryRequest 22))
+  direct <- Client.runClient noRetry (retryRequest 0)
+  liftIO $ expect (direct == 1) "noRetry success failed"
   converted <- Client.runClient
-    (Client.noRetry (\_ -> pure "failed") (pure . show) (\_ -> failTest "unexpected request exception"))
+    (Client.noRetry (\_ -> pure "failed") (pure . show)
+      (\_ -> liftIO (failTest "unexpected request exception")))
     (retryRequest 0)
-  expect (converted == "2") "IO policy did not change the result type"
+  liftIO $ expect (converted == "2") "policy did not change the result type"
   let unexpected = Client.RetryPolicy ()
         (\_ _ -> fail "retry decision failed")
         (pure . show)
         (\_ -> pure "recovered")
-        :: Client.RetryPolicy IO Int String
+        :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int String
   recovered <- Client.runClient unexpected (retryRequest 23)
-  expect (recovered == "recovered") "unexpected IO failure bypassed the policy"
-  consoleLog "SUCCESS"
+  liftIO $ expect (recovered == "recovered") "unexpected IO failure bypassed the policy"
+  liftIO $ consoleLog "SUCCESS"
+
+expectStatus503 :: ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
+expectStatus503 request =
+  (void request >> liftIO (failTest "expected HTTP 503")) `catchE` \err ->
+    liftIO $ expect (Client.clientErrorStatus err == Just 503) "unexpected retry failure"
 
 expect :: Bool -> Text -> IO ()
 expect condition message = unless condition (failTest message)

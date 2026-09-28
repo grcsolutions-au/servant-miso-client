@@ -12,7 +12,7 @@ for both success and terminal failure. For example, an endpoint returning
 
 ```haskell
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.Except (ExceptT, throwE)
+import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Servant.Client.Compat
 
 policy :: RetryPolicy (ExceptT ClientError IO) Int Int
@@ -24,11 +24,16 @@ policy = RetryPolicy (0 :: Int) onError pure onException
         else Right (throwE err)
     onException _ = pure (-1)
 
--- request :: ClientRequest Int
--- runClient policy request :: ExceptT ClientError IO Int
--- runClientAsync policy request :: IO (ClientAsync (ExceptT ClientError IO Int))
--- awaitClient =<< liftIO (runClientAsync policy request) :: ExceptT ClientError IO Int
+runClientTest :: ClientRequest Int -> ExceptT ClientError IO ()
+runClientTest request = do
+  pending <- runClientAsync policy request
+  response <- awaitClient pending
+  liftIO (print response)
 ```
+
+An executable's `main :: IO ()` can interpret `runExceptT (runClientTest request)`
+once and handle any remaining `ClientError` there. `runClient policy request`
+also composes directly in `ExceptT` for calls that do not need an async handle.
 
 The last handler decides how to represent unexpected IO exceptions; it is
 separate from the HTTP `ClientError` handler. Retry decisions (including any
