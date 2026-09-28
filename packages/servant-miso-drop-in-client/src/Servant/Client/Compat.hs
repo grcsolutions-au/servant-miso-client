@@ -178,58 +178,46 @@ noRetry
   -> (SomeException -> m result)
   -> (raw -> m result)
   -> RetryPolicy m a result
-noRetry onError onSuccess onException finish = RetryPolicy
+noRetry onError retryOnSuccess retryOnException retryFinish = RetryPolicy
   { retryInitialState = ()
   , retryOnError = \_ err -> Right <$> onError err
-  , retryOnSuccess = onSuccess
-  , retryOnException = onException
-  , retryFinish = finish
+  , retryOnSuccess
+  , retryOnException
+  , retryFinish
   }
 
 runClientAsync :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m (ClientAsync m result)
 #ifdef VANILLA
-runClientAsync RetryPolicy
-  { retryInitialState = initialState
-  , retryOnError = handleError
-  , retryOnSuccess = handleSuccess
-  , retryOnException = onException
-  , retryFinish = finish
-  } (ClientRequest request) = liftIO $ do
-  worker <- async (go initialState)
-  pure (ClientAsync worker finish onException)
+runClientAsync RetryPolicy{..} (ClientRequest request) = liftIO $ do
+  worker <- async (go retryInitialState)
+  pure (ClientAsync worker retryFinish retryOnException)
   where
     go state = do
       response <- request
       case response of
         Left err -> do
-          decision <- handleError state err
+          decision <- retryOnError state err
           case decision of
             Left nextState -> go nextState
             Right raw -> evaluate raw
-        Right value -> handleSuccess value >>= evaluate
+        Right value -> retryOnSuccess value >>= evaluate
 #else
 
-runClientAsync RetryPolicy
-  { retryInitialState = initialState
-  , retryOnError = handleError
-  , retryOnSuccess = handleSuccess
-  , retryOnException = onException
-  , retryFinish = finish
-  } request = liftIO $ do
+runClientAsync RetryPolicy{..} request = liftIO $ do
   result <- newEmptyMVar
   let complete = void . tryPutMVar result . Right
       onFailureException = void . tryPutMVar result . Left
       startAttempt state = request onSuccess (onFailure state) `catch` onFailureException
-      onSuccess response = (handleSuccess (body response) >>= evaluate >>= complete) `catch` onFailureException
+      onSuccess response = (retryOnSuccess (body response) >>= evaluate >>= complete) `catch` onFailureException
       onFailure state response =
         (do
-          decision <- handleError state (ClientError response)
+          decision <- retryOnError state (ClientError response)
           case decision of
             Left nextState -> startAttempt nextState
             Right raw -> evaluate raw >>= complete)
         `catch` onFailureException
-  startAttempt initialState
-  pure (ClientAsync result finish onException)
+  startAttempt retryInitialState
+  pure (ClientAsync result retryFinish retryOnException)
 #endif
 
 runClient :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m result

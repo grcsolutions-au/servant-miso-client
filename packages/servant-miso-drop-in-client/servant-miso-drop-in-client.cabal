@@ -35,7 +35,9 @@ library
   default-extensions:
     GADTs
     FlexibleContexts
+    NamedFieldPuns
     PackageImports
+    RecordWildCards
     DerivingStrategies
     ScopedTypeVariables
     TypeFamilies
