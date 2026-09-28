@@ -69,8 +69,8 @@ runClientTest = do
         clientEnv
         (Proxy @UploadAPI)
         requestBody
-  asyncRequest <- Client.runClientMAsync request
-  result <- Client.await asyncRequest
+  asyncRequest <- Client.runClientAsync request
+  result <- Client.awaitClient asyncRequest
   case result of
     Right response
       | response == expectedAck ->

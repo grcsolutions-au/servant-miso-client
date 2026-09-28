@@ -9,7 +9,7 @@ module Servant.Client.Compat
   , ClientRequest
   , Manager
   , Scheme(..)
-  , await
+  , awaitClient
   , clientWithEnv
   , consoleError
   , consoleLog
@@ -17,12 +17,13 @@ module Servant.Client.Compat
   , mkClientEnv
   , newManager
   , runClient
-  , runClientMAsync
+  , runClientAsync
   ) where
 
 
 import Data.Proxy (Proxy)
 import Data.Text (Text)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 
 #ifdef VANILLA
 import Control.Concurrent.Async (Async, async, wait)
@@ -78,6 +79,8 @@ newtype ClientError
 #else
   = ClientError (Response MisoString)
 #endif
+
+--newtype RetryPolicy a = RetryPolicy s ((ClientError, s) -> Maybe b) (a -> b)
 
 #ifdef VANILLA
 -- We must make this a newtype so we can pass it as a parameter to 
@@ -141,19 +144,28 @@ mkClientEnv (Manager manager) (BaseUrl url) =
 mkClientEnv _ = ClientEnv
 #endif
 
-#ifdef VANILLA
-nativeRunClientM
-  :: NativeServantClient.ClientEnv
-  -> NativeServantClient.ClientM a
-  -> ClientRequest a
-nativeRunClientM env request =
-  ClientRequest $
-    Bifunctor.first ClientError <$> NativeServantClient.runClientM request env
+data RetryPolicy m a b where
+  RetryPolicy :: acc -> (ClientError -> Either acc (m b)) -> (a -> m b) -> RetryPolicy m a b
 
-runClientMAsync
-  :: ClientRequest a
+applyRetryPolicy
+  :: MonadIO m
+  => RetryPolicy m a b
+  -> IO (Either ClientError a)
+  -> m b
+applyRetryPolicy (RetryPolicy initialAcc handleError handleSuccess) action = go initialAcc where
+  go acc = do
+    result <- liftIO action
+    case result of
+      Left err -> case handleError err of
+        Left newAcc -> go newAcc
+        Right b -> b
+      Right a -> handleSuccess a
+
+#ifdef VANILLA
+runClientAsync
+  :: forall a. ClientRequest a
   -> IO (ClientAsync (Either ClientError a))
-runClientMAsync (ClientRequest request) = ClientAsync <$> async request
+runClientAsync (ClientRequest request) = ClientAsync <$> async request
 #else
 
 data MisoRequestCallbackException = MisoRequestCallbackCalledMoreThanOnce
@@ -163,10 +175,7 @@ instance Exception MisoRequestCallbackException where
   displayException MisoRequestCallbackCalledMoreThanOnce =
     "Miso request code called its callback more than once. This should never happen. This indicates a bug in the Miso request code."
 
-runClientMAsync
-  :: forall a. ((Response a -> IO ()) -> (Response MisoString -> IO ()) -> IO ())
-  -> IO (ClientAsync (Either ClientError a))
-runClientMAsync request = do
+runClientAsync request = do
   result <- newEmptyMVar
   let
     putMVarOrThrow :: Either ClientError a -> IO ()
@@ -186,7 +195,7 @@ runClient :: ClientRequest a -> IO (Either ClientError a)
 #ifdef VANILLA
 runClient (ClientRequest request) = request
 #else
-runClient request = await =<< runClientMAsync request
+runClient request = await =<< runClientAsync request
 #endif
 
 clientWithEnv ::
@@ -200,15 +209,18 @@ clientWithEnv ::
   -> Client api
 #ifdef VANILLA
 clientWithEnv (ClientEnv env) api =
-  NativeServantClient.hoistClient api (nativeRunClientM env)
-    (NativeServantClient.client api)
+  NativeServantClient.hoistClient api nativeRunClientM (NativeServantClient.client api)
+  where
+    nativeRunClientM :: NativeServantClient.ClientM a -> ClientRequest a 
+    nativeRunClientM request = ClientRequest $
+      Bifunctor.first ClientError <$> NativeServantClient.runClientM request env
 #else
 clientWithEnv (ClientEnv (BaseUrl url)) = MisoClient.toClient url
 #endif
 
-await :: ClientAsync a -> IO a
+awaitClient :: ClientAsync a -> IO a
 #ifdef VANILLA
-await (ClientAsync asyncRequest) = wait asyncRequest
+awaitClient (ClientAsync asyncRequest) = wait asyncRequest
 #else
-await (ClientAsync result) = readMVar result
+awaitClient (ClientAsync result) = readMVar result
 #endif
