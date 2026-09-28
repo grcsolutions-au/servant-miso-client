@@ -5,51 +5,49 @@ This is a [servant-client](https://github.com/haskell-servant/servant) binding t
 
 ### Retry policies with the compatibility client
 
-`Servant.Client.Compat` applies a `RetryPolicy m a b result` to an endpoint's
-`ClientRequest a`. The policy owns the retry state and chooses an `m b` action
-for both success and terminal failure. It also specifies how async completion
-turns that action into a cached `result`. For example, an endpoint returning
-`Int` can use `ExceptT ClientError IO` for terminal actions:
+`Servant.Client.Compat` applies a `RetryPolicy m a result` to an endpoint's
+`ClientRequest a`. The policy runs attempts and retry decisions in `IO` and
+stores a caller-chosen raw outcome. `retryFinish` converts that outcome in the
+caller's monad; the raw type is internal to the policy. For example, an endpoint
+returning `Int` can use `ExceptT ClientError IO`:
 
 ```haskell
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Servant.Client.Compat
 
-policy :: RetryPolicy (ExceptT ClientError IO) Int Int (Either String (Either ClientError Int))
-policy = RetryPolicy (0 :: Int) onError pure onException
-  (fmap Right . runExceptT) (pure . Left . show)
+policy :: RetryPolicy (ExceptT ClientError IO) Int Int
+policy = RetryPolicy
+  { retryInitialState = 0 :: Int
+  , retryOnError = onError
+  , retryOnSuccess = pure . Right
+  , retryOnException = \_ -> pure (-1)
+  , retryFinish = either throwE pure
+  }
   where
     onError retries err = pure $
       if retries < 2 && clientErrorStatus err == Just 503
         then Left (retries + 1)
-        else Right (throwE err)
-    onException _ = pure (-1)
+        else Right (Left err)
 
 runClientTest :: ClientRequest Int -> ExceptT ClientError IO ()
 runClientTest request = do
   pending <- runClientAsync policy request
   response <- awaitClient pending
-  case response of
-    Right (Right value) -> liftIO (print value)
-    Right (Left err) -> throwE err
-    Left message -> liftIO (putStrLn message)
+  liftIO (print response)
 ```
 
 An executable's `main :: IO ()` can interpret `runExceptT (runClientTest request)`
 once and handle any remaining `ClientError` there. `runClient policy request`
-also composes directly in `ExceptT` for calls that do not need an async handle.
+returns the same result in `ExceptT` for calls that do not need an async handle.
 
-The policy's `onException` handler chooses a terminal action for unexpected
-request or retry-decision exceptions; the final argument provides a fallback
-result when running a terminal action throws, and must return normally.
-The caller chooses both the result shape and whether to propagate a cached
-`ClientError` (as the example does explicitly with `throwE`). Retry decisions
-(including IO logging or delay) run during the request; the terminal action
-runs once before the async result completes. Repeated awaits read the same
-result without sending another request or rerunning the terminal action.
-Native calls start one `async` worker for all attempts; browser calls fill one
-result MVar only when the policy finishes.
+The policy can use other raw outcomes and monads, such as `Maybe a` converted
+to `MaybeT IO a`. Unexpected IO exceptions from requests or raw handlers are
+passed to `retryOnException` in `m`, without being thrown to the caller by the
+retry loop. IO decisions and outcome handlers run once; repeated awaits reuse
+the raw outcome but run `retryFinish` (or `retryOnException`) again. Native
+calls start one `async` worker for all attempts; browser calls fill one result
+MVar only when the IO retry loop finishes.
 
 
 ```haskell

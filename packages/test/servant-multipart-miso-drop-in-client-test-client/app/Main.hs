@@ -4,7 +4,6 @@
 module Main where
 
 import Control.Monad (unless, void)
-import Control.Exception (SomeException)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, catchE, runExceptT, throwE)
 import Data.IORef (modifyIORef', newIORef, readIORef)
@@ -70,38 +69,20 @@ uploadForm payload = UploadForm
   , attachmentContents = FileData "attachment" "fixture.txt" "text/plain" payload
   }
 
-retryExcept :: Client.RetryPolicy (ExceptT Client.ClientError IO) a a (AsyncOutcome a)
-retryExcept = Client.RetryPolicy (0 :: Int) handleError pure onException runAsyncTerminal runAsyncException
+retryExcept :: Client.RetryPolicy (ExceptT Client.ClientError IO) a a
+retryExcept = Client.RetryPolicy
+  { Client.retryInitialState = 0 :: Int
+  , Client.retryOnError = handleError
+  , Client.retryOnSuccess = pure . Right
+  , Client.retryOnException = onException
+  , Client.retryFinish = either throwE pure
+  }
   where
     handleError retries err =
       pure $ if retries < 2 && Client.clientErrorStatus err == Just 503
         then Left (retries + 1)
-        else Right (throwE err)
+        else Right (Left err)
     onException _ = liftIO (failTest "unexpected request exception")
-
-type AsyncOutcome a = Either String (Either Client.ClientError a)
-
-runAsyncTerminal :: ExceptT Client.ClientError IO a -> IO (AsyncOutcome a)
-runAsyncTerminal action = Right <$> runExceptT action
-
-runAsyncException :: SomeException -> IO (AsyncOutcome a)
-runAsyncException = pure . Left . show
-
-awaitSuccess :: Client.ClientAsync (AsyncOutcome a) -> ExceptT Client.ClientError IO a
-awaitSuccess pending = do
-  outcome <- Client.awaitClient pending
-  case outcome of
-    Right (Right value) -> pure value
-    Right (Left err) -> throwE err
-    Left message -> liftIO (failTest ("unexpected async failure: " <> pack message))
-
-expectAsyncStatus503 :: AsyncOutcome a -> ExceptT Client.ClientError IO ()
-expectAsyncStatus503 (Right (Left err)) =
-  liftIO $ expect (Client.clientErrorStatus err == Just 503) "unexpected async retry failure"
-expectAsyncStatus503 _ = liftIO (failTest "expected async HTTP 503")
-
-throwingRunner :: ExceptT Client.ClientError IO a -> IO (AsyncOutcome a)
-throwingRunner _ = ioError (userError "runner failed")
 
 runClientTest :: ExceptT Client.ClientError IO ()
 runClientTest = do
@@ -111,32 +92,33 @@ runClientTest = do
   let baseUrl = Client.mkBaseUrl Client.Http "127.0.0.1" testPort ""
       clientEnv = Client.mkClientEnv manager baseUrl
       uploadRequest :<|> retryRequest = Client.clientWithEnv clientEnv (Proxy @TestAPI)
-      noRetry = Client.noRetry throwE pure
-        (\_ -> liftIO (failTest "unexpected request exception")) runAsyncTerminal runAsyncException
+      noRetry = Client.noRetry (pure . Left) (pure . Right)
+        (\_ -> liftIO (failTest "unexpected request exception")) (either throwE pure)
   asyncRequest <- Client.runClientAsync noRetry (uploadRequest requestBody)
-  response <- awaitSuccess asyncRequest
+  response <- Client.awaitClient asyncRequest
   liftIO $ expect (response == expectedAck)
     ("unexpected response: " <> pack (show response))
 
   retried <- Client.runClientAsync retryExcept (retryRequest 2)
-  first <- awaitSuccess retried
-  second <- awaitSuccess retried
+  first <- Client.awaitClient retried
+  second <- Client.awaitClient retried
   liftIO $ expect (first == 3 && second == 3) "retry result changed across awaits"
   nextAttempt <- Client.runClient noRetry (retryRequest 2)
   liftIO $ expect (nextAttempt == 4) "awaiting repeated the HTTP request"
 
   failed <- Client.runClientAsync retryExcept (retryRequest 20)
-  expectAsyncStatus503 =<< Client.awaitClient failed
-  expectAsyncStatus503 =<< Client.awaitClient failed
+  expectStatus503 (Client.awaitClient failed)
+  expectStatus503 (Client.awaitClient failed)
   expectStatus503 (Client.runClient retryExcept (retryRequest 20))
-  let diagnostic = Client.RetryPolicy (0 :: Int)
-        (\retries err -> pure $ if retries < 1
-          then Left (retries + 1)
-          else Right (pure (retries + 1, Client.clientErrorStatus err)))
-        (\value -> pure (value, Nothing))
-        (\_ -> liftIO (failTest "unexpected request exception"))
-        runAsyncTerminal runAsyncException
-        :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int (Int, Maybe Int) (AsyncOutcome (Int, Maybe Int))
+  let diagnostic = Client.RetryPolicy
+        { Client.retryInitialState = 0 :: Int
+        , Client.retryOnError = \retries err -> pure $ if retries < 1
+            then Left (retries + 1)
+            else Right (retries + 1, Client.clientErrorStatus err)
+        , Client.retryOnSuccess = \value -> pure (value, Nothing)
+        , Client.retryOnException = \_ -> liftIO (failTest "unexpected request exception")
+        , Client.retryFinish = pure
+        } :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int (Int, Maybe Int)
   stopped <- Client.runClient diagnostic (retryRequest 21)
   liftIO $ expect (stopped == (2, Just 503)) "policy did not use retry state and error"
 
@@ -145,39 +127,45 @@ runClientTest = do
   liftIO $ expect (direct == 1) "noRetry success failed"
   converted <- Client.runClient
     (Client.noRetry (\_ -> pure "failed") (pure . show)
-      (\_ -> liftIO (failTest "unexpected request exception")) runAsyncTerminal runAsyncException)
+      (\_ -> liftIO (failTest "unexpected request exception")) pure)
     (retryRequest 0)
   liftIO $ expect (converted == "2") "policy did not change the result type"
-  let unexpected = Client.RetryPolicy ()
-        (\_ _ -> fail "retry decision failed")
-        (pure . show)
-        (\_ -> pure "recovered")
-        runAsyncTerminal runAsyncException
-        :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int String (AsyncOutcome String)
+  let unexpected = Client.RetryPolicy
+        { Client.retryInitialState = ()
+        , Client.retryOnError = \_ _ -> fail "retry decision failed"
+        , Client.retryOnSuccess = pure . show
+        , Client.retryOnException = \_ -> pure "recovered"
+        , Client.retryFinish = pure
+        } :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int String
   recovered <- Client.runClient unexpected (retryRequest 23)
   liftIO $ expect (recovered == "recovered") "unexpected IO failure bypassed the policy"
 
-  executions <- liftIO (newIORef (0 :: Int))
-  let counted = Client.noRetry throwE
-        (\value -> liftIO (modifyIORef' executions (+ 1)) >> pure value)
+  rawExecutions <- liftIO (newIORef (0 :: Int))
+  finishExecutions <- liftIO (newIORef (0 :: Int))
+  let counted = Client.noRetry (pure . Left)
+        (\value -> modifyIORef' rawExecutions (+ 1) >> pure (Right value))
         (\_ -> liftIO (failTest "unexpected request exception"))
-        runAsyncTerminal runAsyncException
+        (\outcome -> do
+          liftIO (modifyIORef' finishExecutions (+ 1))
+          either throwE pure outcome)
   countedRequest <- Client.runClientAsync counted (retryRequest 0)
-  countedFirst <- awaitSuccess countedRequest
-  countedSecond <- awaitSuccess countedRequest
-  executionCount <- liftIO (readIORef executions)
-  liftIO $ expect (countedFirst == 3 && countedSecond == 3 && executionCount == 1)
-    "terminal action ran more than once"
+  countedFirst <- Client.awaitClient countedRequest
+  countedSecond <- Client.awaitClient countedRequest
+  rawCount <- liftIO (readIORef rawExecutions)
+  finishCount <- liftIO (readIORef finishExecutions)
+  liftIO $ expect (countedFirst == 3 && countedSecond == 3 && rawCount == 1 && finishCount == 2)
+    "raw result was repeated or the finalizer did not run per await"
 
-  let throwingPolicy = Client.noRetry throwE pure
-        (\_ -> liftIO (failTest "unexpected request exception")) throwingRunner runAsyncException
-  runnerFailure <- Client.runClientAsync throwingPolicy (retryRequest 0)
-  runnerFirst <- Client.awaitClient runnerFailure
-  runnerSecond <- Client.awaitClient runnerFailure
-  liftIO $ expect (case (runnerFirst, runnerSecond) of
-    (Left firstMessage, Left secondMessage) ->
-      "runner failed" `isInfixOf` firstMessage && firstMessage == secondMessage
-    _ -> False) "runner exception was not cached"
+  let throwingPolicy = Client.noRetry (pure . Left)
+        (\_ -> ioError (userError "raw handler failed"))
+        (\err -> do
+          liftIO $ expect ("raw handler failed" `isInfixOf` show err) "wrong IO exception"
+          pure (-1 :: Int))
+        (either throwE pure)
+  failedHandler <- Client.runClientAsync throwingPolicy (retryRequest 0)
+  exceptionFirst <- Client.awaitClient failedHandler
+  exceptionSecond <- Client.awaitClient failedHandler
+  liftIO $ expect (exceptionFirst == -1 && exceptionSecond == -1) "IO handler exception was not cached"
   liftIO $ consoleLog "SUCCESS"
 
 expectStatus503 :: ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()

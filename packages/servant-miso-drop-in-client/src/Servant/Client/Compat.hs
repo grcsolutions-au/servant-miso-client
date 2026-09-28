@@ -27,10 +27,10 @@ module Servant.Client.Compat
 import Data.Proxy (Proxy)
 import Data.Text (Text)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Exception (SomeException, catch, evaluate)
+import Control.Exception (SomeException, evaluate)
 
 #ifdef VANILLA
-import Control.Concurrent.Async (Async, async, wait)
+import Control.Concurrent.Async (Async, async, waitCatch)
 import qualified Data.Bifunctor as Bifunctor
 import qualified Data.Text.IO as TextIO
 import qualified Network.HTTP.Client as HttpClient
@@ -38,6 +38,7 @@ import qualified Network.HTTP.Types.Status as HttpStatus
 import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
+import Control.Exception (catch)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
 import Control.Monad (void)
 import qualified Miso.FFI as MisoFFI
@@ -70,11 +71,11 @@ newtype ClientEnv
   = ClientEnv BaseUrl
 #endif
 
-newtype ClientAsync a
+data ClientAsync m result where
 #ifdef VANILLA
-  = ClientAsync (Async a)
+  ClientAsync :: Async raw -> (raw -> m result) -> (SomeException -> m result) -> ClientAsync m result
 #else
-  = ClientAsync (MVar a)
+  ClientAsync :: MVar (Either SomeException raw) -> (raw -> m result) -> (SomeException -> m result) -> ClientAsync m result
 #endif
 
 newtype ClientError
@@ -161,93 +162,78 @@ mkClientEnv (Manager manager) (BaseUrl url) =
 mkClientEnv _ = ClientEnv
 #endif
 
-data RetryPolicy m a b result where
+data RetryPolicy m a result where
   RetryPolicy
-    :: state
-    -> (state -> ClientError -> IO (Either state (m b)))
-    -> (a -> m b)
-    -> (SomeException -> m b)
-    -> (m b -> IO result)
-    -> (SomeException -> IO result)
-    -> RetryPolicy m a b result
+    :: { retryInitialState :: state
+       , retryOnError :: state -> ClientError -> IO (Either state raw)
+       , retryOnSuccess :: a -> IO raw
+       , retryOnException :: SomeException -> m result
+       , retryFinish :: raw -> m result
+       }
+    -> RetryPolicy m a result
 
 noRetry
-  :: (ClientError -> m b)
-  -> (a -> m b)
-  -> (SomeException -> m b)
-  -> (m b -> IO result)
-  -> (SomeException -> IO result)
-  -> RetryPolicy m a b result
-noRetry onError onSuccess onException =
-  RetryPolicy () (\_ err -> pure (Right (onError err))) onSuccess onException
+  :: (ClientError -> IO raw)
+  -> (a -> IO raw)
+  -> (SomeException -> m result)
+  -> (raw -> m result)
+  -> RetryPolicy m a result
+noRetry onError onSuccess onException finish = RetryPolicy
+  { retryInitialState = ()
+  , retryOnError = \_ err -> Right <$> onError err
+  , retryOnSuccess = onSuccess
+  , retryOnException = onException
+  , retryFinish = finish
+  }
 
+runClientAsync :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m (ClientAsync m result)
 #ifdef VANILLA
-applyRetryPolicy
-  :: RetryPolicy m a b result
-  -> IO (Either ClientError a)
-  -> IO (m b)
-applyRetryPolicy (RetryPolicy initialAcc handleError handleSuccess handleException _ _) action =
-  go initialAcc `catch` (pure . handleException)
+runClientAsync RetryPolicy
+  { retryInitialState = initialState
+  , retryOnError = handleError
+  , retryOnSuccess = handleSuccess
+  , retryOnException = onException
+  , retryFinish = finish
+  } (ClientRequest request) = liftIO $ do
+  worker <- async (go initialState)
+  pure (ClientAsync worker finish onException)
   where
-  go acc = do
-    result <- action
-    case result of
-      Left err -> do
-        decision <- handleError acc err
-        case decision of
-          Left newAcc -> go newAcc
-          Right terminal -> pure terminal
-      Right value -> pure (handleSuccess value)
-#endif
-
-runClientAsync :: forall m a b result. MonadIO m => RetryPolicy m a b result -> ClientRequest a -> m (ClientAsync result)
-#ifdef VANILLA
-runClientAsync policy@(RetryPolicy _ _ _ _ runTerminal onRunnerException) (ClientRequest request) =
-  liftIO $ ClientAsync <$> async
-    ((applyRetryPolicy policy request >>= runTerminal >>= evaluate)
-      `catch` (\err -> onRunnerException err >>= evaluate))
+    go state = do
+      response <- request
+      case response of
+        Left err -> do
+          decision <- handleError state err
+          case decision of
+            Left nextState -> go nextState
+            Right raw -> evaluate raw
+        Right value -> handleSuccess value >>= evaluate
 #else
 
-runClientAsync policy@(RetryPolicy _ _ _ _ runTerminal onRunnerException) request = liftIO $ do
+runClientAsync RetryPolicy
+  { retryInitialState = initialState
+  , retryOnError = handleError
+  , retryOnSuccess = handleSuccess
+  , retryOnException = onException
+  , retryFinish = finish
+  } request = liftIO $ do
   result <- newEmptyMVar
-  let
-    complete :: m b -> IO ()
-    complete terminal = do
-      resolved <- (runTerminal terminal >>= evaluate)
-        `catch` (\err -> onRunnerException err >>= evaluate)
-      void (tryPutMVar result resolved)
-  startClientRequest policy request complete
-  pure (ClientAsync result)
-
-startClientRequest :: RetryPolicy m a b result -> ClientRequest a -> (m b -> IO ()) -> IO ()
-startClientRequest (RetryPolicy initialAcc handleError handleSuccess handleException _ _) request complete =
-  startAttempt initialAcc
-  where
-    onException :: SomeException -> IO ()
-    onException = complete . handleException
-    startAttempt acc = request onSuccess onFailure `catch` onException
-      where
-        onSuccess response = complete (handleSuccess (body response)) `catch` onException
-        onFailure response =
-          (do
-            decision <- handleError acc (ClientError response)
-            case decision of
-              Left newAcc -> startAttempt newAcc
-              Right terminal -> complete terminal)
-          `catch` onException
+  let complete = void . tryPutMVar result . Right
+      onFailureException = void . tryPutMVar result . Left
+      startAttempt state = request onSuccess (onFailure state) `catch` onFailureException
+      onSuccess response = (handleSuccess (body response) >>= evaluate >>= complete) `catch` onFailureException
+      onFailure state response =
+        (do
+          decision <- handleError state (ClientError response)
+          case decision of
+            Left nextState -> startAttempt nextState
+            Right raw -> evaluate raw >>= complete)
+        `catch` onFailureException
+  startAttempt initialState
+  pure (ClientAsync result finish onException)
 #endif
 
-runClient :: MonadIO m => RetryPolicy m a b result -> ClientRequest a -> m b
-#ifdef VANILLA
-runClient policy (ClientRequest request) = liftIO (applyRetryPolicy policy request) >>= id
-#else
-runClient policy request = do
-  terminal <- liftIO $ do
-    result <- newEmptyMVar
-    startClientRequest policy request (void . tryPutMVar result)
-    readMVar result
-  terminal
-#endif
+runClient :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m result
+runClient policy request = awaitClient =<< runClientAsync policy request
 
 clientWithEnv ::
 #ifdef VANILLA
@@ -269,9 +255,13 @@ clientWithEnv (ClientEnv env) api =
 clientWithEnv (ClientEnv (BaseUrl url)) = MisoClient.toClient url
 #endif
 
-awaitClient :: MonadIO m => ClientAsync result -> m result
+awaitClient :: MonadIO m => ClientAsync m result -> m result
 #ifdef VANILLA
-awaitClient (ClientAsync asyncRequest) = liftIO (wait asyncRequest)
+awaitClient (ClientAsync asyncRequest finish onException) = do
+  outcome <- liftIO (waitCatch asyncRequest)
+  either onException finish outcome
 #else
-awaitClient (ClientAsync result) = liftIO (readMVar result)
+awaitClient (ClientAsync result finish onException) = do
+  outcome <- liftIO (readMVar result)
+  either onException finish outcome
 #endif
