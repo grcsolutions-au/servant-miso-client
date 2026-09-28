@@ -50,5 +50,6 @@ library
     build-depends:
         async
       , http-client
+      , http-types
       , servant-client
 

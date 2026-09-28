@@ -2,6 +2,8 @@ module Servant.Multipart.Miso.Test.UploadTypes
   ( UploadForm(..)
   , UploadAck(..)
   , UploadAPI
+  , RetryAPI
+  , TestAPI
   , testPort
   ) where
 
@@ -9,7 +11,7 @@ import qualified Data.Aeson as Aeson
 import Data.Text (Text)
 import GHC.Generics (Generic)
 import qualified Miso.JSON as MisoJSON
-import Servant.API.Compat (JSON, Post, (:>))
+import Servant.API.Compat (Capture, Get, JSON, Post, (:<|>), (:>))
 import Servant.Multipart.API
   ( FileData
   , FromMultipart(..)
@@ -53,6 +55,10 @@ instance MisoJSON.ToJSON UploadAck where
   toJSON = MisoJSON.genericToJSON MisoJSON.defaultOptions
 
 type UploadAPI = "upload" :> MultipartForm (MultipartCompat Tmp) UploadForm :> Post '[JSON] UploadAck
+
+type RetryAPI = "retry" :> Capture "failures" Int :> Get '[JSON] Int
+
+type TestAPI = UploadAPI :<|> RetryAPI
 
 testPort :: Int
 testPort = 8090

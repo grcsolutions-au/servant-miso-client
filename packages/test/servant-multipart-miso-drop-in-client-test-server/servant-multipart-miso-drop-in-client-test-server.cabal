@@ -16,6 +16,7 @@ executable servant-multipart-miso-drop-in-client-test-server
   build-depends:
     base < 5,
     bytestring,
+    containers,
     servant-multipart-api,
     servant-multipart,
     servant-multipart-miso-drop-in-server,

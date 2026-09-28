@@ -3,6 +3,40 @@
 
 This is a [servant-client](https://github.com/haskell-servant/servant) binding to [miso](https://github.com/dmjio/miso).
 
+### Retry policies with the compatibility client
+
+`Servant.Client.Compat` applies a `RetryPolicy m a b` to an endpoint's
+`ClientRequest a`. The policy owns the retry state and chooses an `m b` action
+for both success and terminal failure. For example, an endpoint returning
+`Int` can expose its result in `ExceptT ClientError IO`:
+
+```haskell
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Except (ExceptT, throwE)
+import Servant.Client.Compat
+
+policy :: RetryPolicy (ExceptT ClientError IO) Int Int
+policy = RetryPolicy (0 :: Int) onError pure onException
+  where
+    onError retries err = pure $
+      if retries < 2 && clientErrorStatus err == Just 503
+        then Left (retries + 1)
+        else Right (throwE err)
+    onException _ = pure (-1)
+
+-- request :: ClientRequest Int
+-- runClient policy request :: ExceptT ClientError IO Int
+-- runClientAsync policy request :: IO (ClientAsync (ExceptT ClientError IO Int))
+-- awaitClient =<< liftIO (runClientAsync policy request) :: ExceptT ClientError IO Int
+```
+
+The last handler decides how to represent unexpected IO exceptions; it is
+separate from the HTTP `ClientError` handler. Retry decisions (including any
+IO logging or delay) run during the request. The terminal `m b` action runs
+when awaited, so awaiting twice does not send another request but does execute
+that action twice. Native calls start one `async` worker for all attempts;
+browser calls fill one result MVar only when the policy finishes.
+
 
 ```haskell
 -----------------------------------------------------------------------------
