@@ -27,7 +27,7 @@ module Servant.Client.Compat
 import Data.Proxy (Proxy)
 import Data.Text (Text)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Exception (SomeException, catch)
+import Control.Exception (SomeException, catch, evaluate)
 
 #ifdef VANILLA
 import Control.Concurrent.Async (Async, async, wait)
@@ -161,23 +161,32 @@ mkClientEnv (Manager manager) (BaseUrl url) =
 mkClientEnv _ = ClientEnv
 #endif
 
-data RetryPolicy m a b where
+data RetryPolicy m a b result where
   RetryPolicy
     :: state
     -> (state -> ClientError -> IO (Either state (m b)))
     -> (a -> m b)
     -> (SomeException -> m b)
-    -> RetryPolicy m a b
+    -> (m b -> IO result)
+    -> (SomeException -> IO result)
+    -> RetryPolicy m a b result
 
-noRetry :: (ClientError -> m b) -> (a -> m b) -> (SomeException -> m b) -> RetryPolicy m a b
-noRetry onError onSuccess = RetryPolicy () (\_ err -> pure (Right (onError err))) onSuccess
+noRetry
+  :: (ClientError -> m b)
+  -> (a -> m b)
+  -> (SomeException -> m b)
+  -> (m b -> IO result)
+  -> (SomeException -> IO result)
+  -> RetryPolicy m a b result
+noRetry onError onSuccess onException =
+  RetryPolicy () (\_ err -> pure (Right (onError err))) onSuccess onException
 
 #ifdef VANILLA
 applyRetryPolicy
-  :: RetryPolicy m a b
+  :: RetryPolicy m a b result
   -> IO (Either ClientError a)
   -> IO (m b)
-applyRetryPolicy (RetryPolicy initialAcc handleError handleSuccess handleException) action =
+applyRetryPolicy (RetryPolicy initialAcc handleError handleSuccess handleException _ _) action =
   go initialAcc `catch` (pure . handleException)
   where
   go acc = do
@@ -191,22 +200,34 @@ applyRetryPolicy (RetryPolicy initialAcc handleError handleSuccess handleExcepti
       Right value -> pure (handleSuccess value)
 #endif
 
-runClientAsync :: forall m a b. MonadIO m => RetryPolicy m a b -> ClientRequest a -> m (ClientAsync (m b))
+runClientAsync :: forall m a b result. MonadIO m => RetryPolicy m a b result -> ClientRequest a -> m (ClientAsync result)
 #ifdef VANILLA
-runClientAsync policy (ClientRequest request) =
-  liftIO $ ClientAsync <$> async (applyRetryPolicy policy request)
+runClientAsync policy@(RetryPolicy _ _ _ _ runTerminal onRunnerException) (ClientRequest request) =
+  liftIO $ ClientAsync <$> async
+    ((applyRetryPolicy policy request >>= runTerminal >>= evaluate)
+      `catch` (\err -> onRunnerException err >>= evaluate))
 #else
 
-runClientAsync (RetryPolicy initialAcc handleError handleSuccess handleException) request = liftIO $ do
+runClientAsync policy@(RetryPolicy _ _ _ _ runTerminal onRunnerException) request = liftIO $ do
   result <- newEmptyMVar
   let
     complete :: m b -> IO ()
-    complete = void . tryPutMVar result
+    complete terminal = do
+      resolved <- (runTerminal terminal >>= evaluate)
+        `catch` (\err -> onRunnerException err >>= evaluate)
+      void (tryPutMVar result resolved)
+  startClientRequest policy request complete
+  pure (ClientAsync result)
+
+startClientRequest :: RetryPolicy m a b result -> ClientRequest a -> (m b -> IO ()) -> IO ()
+startClientRequest (RetryPolicy initialAcc handleError handleSuccess handleException _ _) request complete =
+  startAttempt initialAcc
+  where
     onException :: SomeException -> IO ()
     onException = complete . handleException
     startAttempt acc = request onSuccess onFailure `catch` onException
       where
-        onSuccess response = complete (handleSuccess (body response))
+        onSuccess response = complete (handleSuccess (body response)) `catch` onException
         onFailure response =
           (do
             decision <- handleError acc (ClientError response)
@@ -214,15 +235,18 @@ runClientAsync (RetryPolicy initialAcc handleError handleSuccess handleException
               Left newAcc -> startAttempt newAcc
               Right terminal -> complete terminal)
           `catch` onException
-  startAttempt initialAcc
-  pure (ClientAsync result)
 #endif
 
-runClient :: MonadIO m => RetryPolicy m a b -> ClientRequest a -> m b
+runClient :: MonadIO m => RetryPolicy m a b result -> ClientRequest a -> m b
 #ifdef VANILLA
 runClient policy (ClientRequest request) = liftIO (applyRetryPolicy policy request) >>= id
 #else
-runClient policy request = awaitClient =<< runClientAsync policy request
+runClient policy request = do
+  terminal <- liftIO $ do
+    result <- newEmptyMVar
+    startClientRequest policy request (void . tryPutMVar result)
+    readMVar result
+  terminal
 #endif
 
 clientWithEnv ::
@@ -245,9 +269,9 @@ clientWithEnv (ClientEnv env) api =
 clientWithEnv (ClientEnv (BaseUrl url)) = MisoClient.toClient url
 #endif
 
-awaitClient :: MonadIO m => ClientAsync (m b) -> m b
+awaitClient :: MonadIO m => ClientAsync result -> m result
 #ifdef VANILLA
-awaitClient (ClientAsync asyncRequest) = liftIO (wait asyncRequest) >>= id
+awaitClient (ClientAsync asyncRequest) = liftIO (wait asyncRequest)
 #else
-awaitClient (ClientAsync result) = liftIO (readMVar result) >>= id
+awaitClient (ClientAsync result) = liftIO (readMVar result)
 #endif
