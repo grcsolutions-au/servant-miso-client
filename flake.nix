@@ -30,19 +30,10 @@
           '';
         };
         testScript = pkgs.writeShellScriptBin "run-tests" (builtins.readFile ./scripts/run-tests);
-        withoutBun = shell:
-          shell.overrideAttrs (old: let
-            filterBun = inputs: builtins.filter
-              (input: !(pkgs.lib.hasPrefix "bun-" (input.name or "")))
-              inputs;
-          in {
-            buildInputs = filterBun (old.buildInputs or []);
-            nativeBuildInputs = filterBun (old.nativeBuildInputs or []);
-          });
         mkShell = shellInputs: withGhcjs:
           pkgs.mkShell {
-            inputsFrom = map withoutBun shellInputs;
-            packages = [ pkgs.zlib pkgs.nodejs pkgs.http-server browserWasiShim testScript ];
+            inputsFrom = shellInputs;
+            packages = [ pkgs.zlib pkgs.bun pkgs.nodejs pkgs.http-server browserWasiShim testScript ];
             shellHook = ''
               export MISO=${inputs.miso}
               export NODE_PATH=${playwrightNodeModule}:''${NODE_PATH:-}

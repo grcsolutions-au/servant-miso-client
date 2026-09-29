@@ -70,6 +70,8 @@ It also executes WASM and GHCJS in headless Chromium using Playwright. The Nix
 development shell provides Node.js, Playwright, Chromium, and the browser WASI
 shim; no npm install step is required. The local Miso checkout used by
 `cabal.project` and the cross-compilers are also provided by the Nix shell.
+The test runner uses Miso's echo server and Playwright launcher directly via
+the Nix-provided Bun runtime.
 
 
 ```haskell
