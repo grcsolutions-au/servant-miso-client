@@ -1,7 +1,0 @@
-{
-  "name": "servant-miso-client-tests",
-  "private": true,
-  "devDependencies": {
-    "@bjorn3/browser_wasi_shim": "0.3.0"
-  }
-}

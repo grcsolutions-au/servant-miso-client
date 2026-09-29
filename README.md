@@ -66,11 +66,10 @@ nix develop -c scripts/run-tests
 
 The runner builds native, WASM, and GHCJS clients in separate Cabal build
 directories and executes all three against a fresh native test server per run.
-It also executes WASM and GHCJS in headless Chromium using Playwright, with a
-locally installed browser WASI shim (installed via `npm ci` on first run).
-The Nix development shell provides Chromium on Linux; set `CHROMIUM_BIN` to a
-different Chromium executable when needed. The local Miso checkout used by
-`cabal.project`, the cross-compilers, Node.js, and npm are also required.
+It also executes WASM and GHCJS in headless Chromium using Playwright. The Nix
+development shell provides Node.js, Playwright, Chromium, and the browser WASI
+shim; no npm install step is required. The local Miso checkout used by
+`cabal.project` and the cross-compilers are also provided by the Nix shell.
 
 
 ```haskell

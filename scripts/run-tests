@@ -23,16 +23,18 @@ if [[ ! -f "${MISO:-}/js/miso.js" ]]; then
   exit 1
 fi
 miso_js="$MISO/js/miso.js"
+browser_wasi_shim="${BROWSER_WASI_SHIM:-}"
+if [[ ! -f "$browser_wasi_shim/index.js" ]]; then
+  printf 'BROWSER_WASI_SHIM must point to the Nix browser WASI shim dist directory (run via nix develop)\n' >&2
+  exit 1
+fi
 
-for tool in bun http-server node npm wasm32-wasi-cabal wasm32-wasi-ghc javascript-unknown-ghcjs-ghc javascript-unknown-ghcjs-ghc-pkg; do
+for tool in http-server node wasm32-wasi-cabal wasm32-wasi-ghc javascript-unknown-ghcjs-ghc javascript-unknown-ghcjs-ghc-pkg; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     printf '%s is required to run all client tests\n' "$tool" >&2
     exit 1
   fi
 done
-if [[ ! -f node_modules/@bjorn3/browser_wasi_shim/package.json ]]; then
-  npm ci --ignore-scripts --no-audit --no-fund
-fi
 
 cleanup_server() {
   if [[ -n "${server_pid:-}" ]]; then
@@ -108,7 +110,7 @@ start_echo_server() {
     printf 'echo test port %s is already in use\n' "$echo_port" >&2
     return 1
   fi
-  bun "$MISO/ts/echo-server.ts" &
+  node scripts/echo-server.mjs &
   echo_pid=$!
   for _ in {1..100}; do
     if (echo >/dev/tcp/127.0.0.1/"$echo_port") 2>/dev/null; then
@@ -120,7 +122,7 @@ start_echo_server() {
     fi
     sleep 0.1
   done
-  printf 'Miso echo server did not start on port %s\n' "$echo_port" >&2
+  printf 'echo test server did not start on port %s\n' "$echo_port" >&2
   return 1
 }
 
@@ -174,11 +176,11 @@ ln -sfn "$project_root/scripts/browser-wasm.html" "$wasm_assets/index.html"
 ln -sfn "$MISO/tests/static/index.js" "$wasm_assets/index.js"
 ln -sfn "$wasm_bin" "$wasm_assets/component-tests.wasm"
 ln -sfn "$jsffi_path" "$wasm_assets/ghc_wasm_jsffi.js"
-ln -sfn "$project_root/node_modules/@bjorn3/browser_wasi_shim/dist" "$wasm_assets/shim"
+ln -sfn "$browser_wasi_shim" "$wasm_assets/shim"
 ln -sfn "$miso_js" "$wasm_assets/miso.js"
 start_server
 start_static_server "$wasm_assets"
-(cd "$MISO/ts" && bun "$MISO/ts/playwright.ts")
+node scripts/run-playwright.cjs
 cleanup_static
 cleanup_server
 
@@ -198,7 +200,7 @@ ln -sfn "$(cabal list-bin \
   "$client_target" | tail -n 1).jsexe/all.js" "$ghcjs_assets/client.js"
 start_server
 start_static_server "$ghcjs_assets"
-(cd "$MISO/ts" && bun "$MISO/ts/playwright.ts")
+node scripts/run-playwright.cjs
 cleanup_static
 cleanup_server
 cleanup_server

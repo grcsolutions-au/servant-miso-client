@@ -14,15 +14,40 @@
           mkdir -p $out
           ln -s ${pkgs.playwright-driver} $out/playwright
         '';
+        browserWasiShim = pkgs.stdenvNoCC.mkDerivation {
+          pname = "browser-wasi-shim";
+          version = "0.3.0";
+          src = pkgs.fetchurl {
+            url = "https://registry.npmjs.org/@bjorn3/browser_wasi_shim/-/browser_wasi_shim-0.3.0.tgz";
+            hash = "sha512-FlRBYttPRLcWORzBe6g8nmYTafBkOEFeOqMYM4tAHJzFsQy4+xJA94z85a9BCs8S+Uzfh9LrkpII7DXr2iUVFg==";
+          };
+          nativeBuildInputs = [ pkgs.gnutar pkgs.gzip ];
+          dontUnpack = true;
+          dontBuild = true;
+          installPhase = ''
+            mkdir -p $out
+            tar -xzf $src --strip-components=1 -C $out
+          '';
+        };
         testScript = pkgs.writeShellScriptBin "run-tests" (builtins.readFile ./scripts/run-tests);
+        withoutBun = shell:
+          shell.overrideAttrs (old: let
+            filterBun = inputs: builtins.filter
+              (input: !(pkgs.lib.hasPrefix "bun-" (input.name or "")))
+              inputs;
+          in {
+            buildInputs = filterBun (old.buildInputs or []);
+            nativeBuildInputs = filterBun (old.nativeBuildInputs or []);
+          });
         mkShell = shellInputs: withGhcjs:
           pkgs.mkShell {
-            inputsFrom = shellInputs;
-            packages = [ pkgs.zlib testScript ];
+            inputsFrom = map withoutBun shellInputs;
+            packages = [ pkgs.zlib pkgs.nodejs pkgs.http-server browserWasiShim testScript ];
             shellHook = ''
               export MISO=${inputs.miso}
               export NODE_PATH=${playwrightNodeModule}:''${NODE_PATH:-}
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
+              export BROWSER_WASI_SHIM=${browserWasiShim}/dist
             '' + pkgs.lib.optionalString withGhcjs ''
               export PATH=${ghcjsCompiler}/bin:$PATH
             '';
@@ -37,6 +62,7 @@
           misoDevShells.wasm
           misoDevShells.ghcjs
         ] true;
+        packages.browser-wasi-shim = browserWasiShim;
       }
     );
 
