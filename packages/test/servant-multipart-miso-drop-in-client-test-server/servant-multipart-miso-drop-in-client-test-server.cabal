@@ -11,17 +11,20 @@ executable servant-multipart-miso-drop-in-client-test-server
     app
   default-extensions:
     TypeApplications
+    OverloadedStrings
     RecordWildCards
   ghc-options: -Wall -Wunused-packages -Werror -threaded
   build-depends:
     base < 5,
     bytestring,
     containers,
+    http-types,
     servant-multipart-api,
     servant-multipart,
     servant-multipart-miso-drop-in-server,
     servant-multipart-miso-drop-in-client-test-common,
     text,
     servant-server,
+    wai,
     warp
   default-language: Haskell2010

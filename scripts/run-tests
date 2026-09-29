@@ -5,9 +5,12 @@ set -euo pipefail
 client_target=exe:servant-multipart-miso-drop-in-client-test-client
 server_target=exe:servant-multipart-miso-drop-in-client-test-server
 test_port=8090
+browser_port=8080
+echo_port=8081
 native_builddir=dist-newstyle/native
 wasm_builddir=dist-newstyle/wasm
 ghcjs_builddir=dist-newstyle/ghcjs
+browser_builddir=dist-newstyle/browser
 
 project_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$project_root" || ! -f "$project_root/cabal.project" ]]; then
@@ -21,18 +24,13 @@ if [[ ! -f "${MISO:-}/js/miso.js" ]]; then
 fi
 miso_js="$MISO/js/miso.js"
 
-for tool in node npm wasm32-wasi-cabal wasm32-wasi-ghc javascript-unknown-ghcjs-ghc javascript-unknown-ghcjs-ghc-pkg; do
+for tool in bun http-server node npm wasm32-wasi-cabal wasm32-wasi-ghc javascript-unknown-ghcjs-ghc javascript-unknown-ghcjs-ghc-pkg; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     printf '%s is required to run all client tests\n' "$tool" >&2
     exit 1
   fi
 done
-export CHROMIUM_BIN="${CHROMIUM_BIN:-$(command -v chromium || true)}"
-if [[ ! -x "$CHROMIUM_BIN" ]]; then
-  printf 'Chromium is required for browser engine tests (set CHROMIUM_BIN)\n' >&2
-  exit 1
-fi
-if [[ ! -f node_modules/playwright/package.json || ! -f node_modules/@bjorn3/browser_wasi_shim/package.json ]]; then
+if [[ ! -f node_modules/@bjorn3/browser_wasi_shim/package.json ]]; then
   npm ci --ignore-scripts --no-audit --no-fund
 fi
 
@@ -43,9 +41,23 @@ cleanup_server() {
     server_pid=
   fi
 }
-trap cleanup_server EXIT
+cleanup_static() {
+  if [[ -n "${static_pid:-}" ]]; then
+    kill "$static_pid" 2>/dev/null || true
+    wait "$static_pid" 2>/dev/null || true
+    static_pid=
+  fi
+}
+cleanup_echo() {
+  if [[ -n "${echo_pid:-}" ]]; then
+    kill "$echo_pid" 2>/dev/null || true
+    wait "$echo_pid" 2>/dev/null || true
+    echo_pid=
+  fi
+}
+trap 'cleanup_server; cleanup_static; cleanup_echo' EXIT
 
-cabal build --builddir="$native_builddir" "$client_target" "$server_target"
+cabal build --jobs=1 --builddir="$native_builddir" "$client_target" "$server_target"
 server_bin="$(cabal list-bin --builddir="$native_builddir" "$server_target" | tail -n 1)"
 start_server() {
   if (echo >/dev/tcp/127.0.0.1/"$test_port") 2>/dev/null; then
@@ -68,15 +80,67 @@ start_server() {
   return 1
 }
 
+start_static_server() {
+  local asset_dir="$1"
+  if (echo >/dev/tcp/127.0.0.1/"$browser_port") 2>/dev/null; then
+    printf 'browser test port %s is already in use\n' "$browser_port" >&2
+    return 1
+  fi
+  http-server "$asset_dir" --port "$browser_port" --address 127.0.0.1 --silent \
+    --proxy "http://127.0.0.1:$test_port" &
+  static_pid=$!
+  for _ in {1..100}; do
+    if (echo >/dev/tcp/127.0.0.1/"$browser_port") 2>/dev/null; then
+      return 0
+    fi
+    if ! kill -0 "$static_pid" 2>/dev/null; then
+      wait "$static_pid" || true
+      return 1
+    fi
+    sleep 0.1
+  done
+  printf 'static test server did not start on port %s\n' "$browser_port" >&2
+  return 1
+}
+
+start_echo_server() {
+  if (echo >/dev/tcp/127.0.0.1/"$echo_port") 2>/dev/null; then
+    printf 'echo test port %s is already in use\n' "$echo_port" >&2
+    return 1
+  fi
+  bun "$MISO/ts/echo-server.ts" &
+  echo_pid=$!
+  for _ in {1..100}; do
+    if (echo >/dev/tcp/127.0.0.1/"$echo_port") 2>/dev/null; then
+      return 0
+    fi
+    if ! kill -0 "$echo_pid" 2>/dev/null; then
+      wait "$echo_pid" || true
+      return 1
+    fi
+    sleep 0.1
+  done
+  printf 'Miso echo server did not start on port %s\n' "$echo_port" >&2
+  return 1
+}
+
+empty_assets="$browser_builddir/empty"
+wasm_assets="$browser_builddir/wasm"
+ghcjs_assets="$browser_builddir/ghcjs"
+mkdir -p "$empty_assets" "$wasm_assets" "$ghcjs_assets"
+start_echo_server
+
 printf '\n==> native client test\n'
 start_server
+start_static_server "$empty_assets"
 client_bin="$(cabal list-bin --builddir="$native_builddir" "$client_target" | tail -n 1)"
 "$client_bin"
+cleanup_static
 cleanup_server
 
 run_wasm_test() {
   printf '\n==> WASM client test\n'
-  wasm32-wasi-cabal build --builddir="$wasm_builddir" "$client_target"
+  wasm32-wasi-cabal build --jobs=1 --ghc-options=-Wno-semaphore-open-failure --builddir="$wasm_builddir" "$client_target"
   wasm_bin="$(wasm32-wasi-cabal list-bin --builddir="$wasm_builddir" "$client_target" | tail -n 1)"
   jsffi_path="$(dirname "$wasm_bin")/ghc_wasm_jsffi.mjs"
   node "$(wasm32-wasi-ghc --print-libdir)/post-link.mjs" --input "$wasm_bin" --output "$jsffi_path"
@@ -86,6 +150,7 @@ run_wasm_test() {
 run_ghcjs_test() {
   printf '\n==> GHCJS client test\n'
   cabal build \
+    --jobs=1 \
     --builddir="$ghcjs_builddir" \
     --with-compiler=javascript-unknown-ghcjs-ghc \
     --with-hc-pkg=javascript-unknown-ghcjs-ghc-pkg \
@@ -99,19 +164,41 @@ run_ghcjs_test() {
 }
 
 start_server
+start_static_server "$empty_assets"
 run_wasm_test
+cleanup_static
 cleanup_server
 
 printf '\n==> WASM Chromium client test\n'
+ln -sfn "$project_root/scripts/browser-wasm.html" "$wasm_assets/index.html"
+ln -sfn "$MISO/tests/static/index.js" "$wasm_assets/index.js"
+ln -sfn "$wasm_bin" "$wasm_assets/component-tests.wasm"
+ln -sfn "$jsffi_path" "$wasm_assets/ghc_wasm_jsffi.js"
+ln -sfn "$project_root/node_modules/@bjorn3/browser_wasi_shim/dist" "$wasm_assets/shim"
+ln -sfn "$miso_js" "$wasm_assets/miso.js"
 start_server
-node scripts/run-browser-engine.mjs wasm "$wasm_bin" "$miso_js" "$jsffi_path"
+start_static_server "$wasm_assets"
+(cd "$MISO/ts" && bun "$MISO/ts/playwright.ts")
+cleanup_static
 cleanup_server
 
 start_server
+start_static_server "$empty_assets"
 run_ghcjs_test
+cleanup_static
 cleanup_server
 
 printf '\n==> GHCJS Chromium client test\n'
+ln -sfn "$project_root/scripts/browser-ghcjs.html" "$ghcjs_assets/index.html"
+ln -sfn "$miso_js" "$ghcjs_assets/miso.js"
+ln -sfn "$(cabal list-bin \
+  --builddir="$ghcjs_builddir" \
+  --with-compiler=javascript-unknown-ghcjs-ghc \
+  --with-hc-pkg=javascript-unknown-ghcjs-ghc-pkg \
+  "$client_target" | tail -n 1).jsexe/all.js" "$ghcjs_assets/client.js"
 start_server
-node scripts/run-browser-engine.mjs ghcjs "${ghcjs_bin}.jsexe/all.js" "$miso_js"
+start_static_server "$ghcjs_assets"
+(cd "$MISO/ts" && bun "$MISO/ts/playwright.ts")
+cleanup_static
+cleanup_server
 cleanup_server

@@ -18,8 +18,7 @@
         mkShell = shellInputs: withGhcjs:
           pkgs.mkShell {
             inputsFrom = shellInputs;
-            packages = [ pkgs.zlib testScript ]
-              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.chromium ];
+            packages = [ pkgs.zlib testScript ];
             shellHook = ''
               export MISO=${inputs.miso}
               export NODE_PATH=${playwrightNodeModule}:''${NODE_PATH:-}

@@ -7,14 +7,12 @@ const require = createRequire(import.meta.url);
 
 try {
   require(misoPath);
-  const fetchFromNetwork = globalThis.fetch;
-  globalThis.fetch = (url, options) => new URL(url).pathname === '/malformed-json'
-    ? Promise.resolve(new Response('not-json', {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    }))
-    : fetchFromNetwork(url, options);
   if (target === 'ghcjs') {
+    const fetchFromNetwork = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = (...args) => fetchFromNetwork(...args).catch(error => {
+      console.error('fetch rejected:', args[0], error.cause ?? error);
+      throw error;
+    });
     const originalLog = console.log;
     let timeout;
     try {

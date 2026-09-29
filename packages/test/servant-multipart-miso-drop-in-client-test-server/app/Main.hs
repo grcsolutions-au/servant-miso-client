@@ -4,6 +4,8 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Concurrent.MVar (MVar, modifyMVar, newMVar)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Network.HTTP.Types (hContentType, status200)
+import Network.Wai (pathInfo, responseLBS)
 import Network.Wai.Handler.Warp (run)
 import qualified Data.ByteString.Lazy.Char8 as LBS8
 import Data.Text (Text)
@@ -37,7 +39,11 @@ retryServer attempts failures = do
 app :: IO Application
 app = do
     attempts <- newMVar Map.empty
-    pure (serve (Proxy @TestAPI) (uploadServer :<|> retryServer attempts))
+    let api = serve (Proxy @TestAPI) (uploadServer :<|> retryServer attempts)
+    pure $ \request sendResponse ->
+      if pathInfo request == ["malformed-json"]
+        then sendResponse (responseLBS status200 [(hContentType, "application/json")] "not-json")
+        else api request sendResponse
 
 main :: IO ()
 main = app >>= run serverPort

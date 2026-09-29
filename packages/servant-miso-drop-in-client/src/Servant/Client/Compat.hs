@@ -158,7 +158,7 @@ mkBaseUrl scheme host port path =
     nativeScheme Https = NativeServantClient.Https
 #else
 mkBaseUrl scheme host port path =
-  BaseUrl . ms $ schemePrefix scheme <> "//" <> host <> ":" <> show port <> path
+  BaseUrl $ ms (schemePrefix scheme <> "//" <> host <> ":") <> ms port <> ms path
   where
     schemePrefix Http = "http:"
     schemePrefix Https = "https:"

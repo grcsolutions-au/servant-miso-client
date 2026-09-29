@@ -40,7 +40,7 @@ main = do
   result <- runExceptT runClientTest
   case result of
     Left err ->
-      failTest ("client request failed with HTTP status " <> pack (show (Client.clientErrorStatus err)))
+      failTest ("client request failed: " <> pack (show err))
     Right () -> pure ()
 
 #ifdef wasm32_HOST_ARCH
@@ -107,9 +107,9 @@ runClientTest = do
       noRetry = Client.noRetry (pure . Left) (pure . Right) (either throwE pure)
       echoEnv = Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" 8081 "")
       echoGet :<|> echoStatus = Client.clientWithEnv echoEnv (Proxy @EchoAPI)
-    echoResponse <- Client.runClient noRetry echoGet
-    liftIO $ expect ("/get" `isInfixOf` unpack (url echoResponse)) "echo server did not return the request URL"
-    expectStatus 418 (Client.runClient noRetry (echoStatus 418))
+  echoResponse <- Client.runClient noRetry echoGet
+  liftIO $ expect ("/get" `isInfixOf` unpack (url echoResponse)) "echo server did not return the request URL"
+  expectStatus 418 (Client.runClient noRetry (echoStatus 418))
   asyncRequest <- Client.runClientAsync noRetry (uploadRequest requestBody)
   response <- Client.awaitClient asyncRequest
   liftIO $ expect (response == expectedAck)
@@ -209,7 +209,7 @@ runClientTest = do
   liftIO $ expect (launchAttempts == 2) "request launch was not retried"
 #endif
   let unavailable = Client.clientWithEnv
-      (Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" (testPort + 2) ""))
+        (Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" (testPort + 2) ""))
         (Proxy @TestAPI)
       _ :<|> unavailableRetry = unavailable
       connectionPolicy = Client.noRetry (pure . Left) (pure . Right) (either throwE pure)
