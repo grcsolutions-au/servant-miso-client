@@ -8,7 +8,16 @@ This is a [servant-client](https://github.com/haskell-servant/servant) binding t
 `Servant.Client.Compat` applies a `RetryPolicy m a result` to an endpoint's
 `ClientRequest a`. The policy runs attempts and retry decisions in `IO` and
 stores a caller-chosen raw outcome. `retryFinish` converts that outcome in the
-caller's monad; the raw type is internal to the policy. For example, an endpoint
+caller's monad; the raw type is internal to the policy. Both native and browser
+clients report the same `ClientError` constructors:
+
+- `HttpError Int Text` for a non-successful HTTP status and its diagnostic.
+- `RequestException SomeException` for a thrown request or transport failure.
+- `InvalidResponse (Maybe Int) Text` for decoding failures or browser fetch
+  failures without an HTTP status. A successful HTTP response that cannot be
+  decoded retains its status (for example, `Just 200`).
+
+`clientErrorStatus` returns the status when present. For example, an endpoint
 returning `Int` can use `ExceptT ClientError IO`:
 
 ```haskell
@@ -21,7 +30,6 @@ policy = RetryPolicy
   { retryInitialState = 0 :: Int
   , retryOnError = onError
   , retryOnSuccess = pure . Right
-  , retryOnException = \_ -> pure (-1)
   , retryFinish = either throwE pure
   }
   where
@@ -42,12 +50,23 @@ once and handle any remaining `ClientError` there. `runClient policy request`
 returns the same result in `ExceptT` for calls that do not need an async handle.
 
 The policy can use other raw outcomes and monads, such as `Maybe a` converted
-to `MaybeT IO a`. Unexpected IO exceptions from requests or raw handlers are
-passed to `retryOnException` in `m`, without being thrown to the caller by the
-retry loop. IO decisions and outcome handlers run once; repeated awaits reuse
-the raw outcome but run `retryFinish` (or `retryOnException`) again. Native
-calls start one `async` worker for all attempts; browser calls fill one result
-MVar only when the IO retry loop finishes.
+to `MaybeT IO a`. Request and transport failures can reach `retryOnError` and
+be retried; exceptions from policy hooks are never retried or converted into
+`ClientError`. They are cached and rethrown on await via `MonadThrow m`. IO
+decisions and outcome handlers run once; repeated awaits reuse the raw outcome
+but run `retryFinish` again in `m`. Exceptions from `retryFinish` occur on each
+await. Native calls start one `async` worker for all attempts; browser calls
+fill one final-result MVar when the IO retry loop finishes.
+
+### Integration tests
+
+```bash
+nix develop -c scripts/run-tests
+```
+
+The runner builds and executes native, WASM, and GHCJS clients against a fresh
+native test server for each target. It requires the local Miso checkout used by
+`cabal.project`, the cross-compilers, and Node.js with WASI support.
 
 
 ```haskell

@@ -5,7 +5,7 @@ module Servant.Client.Compat
   , Client
   , ClientAsync
   , ClientEnv
-  , ClientError
+  , ClientError(..)
   , ClientRequest
   , Manager
   , RetryPolicy(..)
@@ -27,9 +27,11 @@ module Servant.Client.Compat
 import Data.Proxy (Proxy)
 import Data.Text (Text)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Exception (SomeException, evaluate)
+import Control.Exception (SomeException, SomeAsyncException, evaluate, fromException, tryJust)
+import Control.Monad.Catch (MonadThrow, throwM)
 
 #ifdef VANILLA
+import qualified Data.Text as Text
 import Control.Concurrent.Async (Async, async, waitCatch)
 import qualified Data.Bifunctor as Bifunctor
 import qualified Data.Text.IO as TextIO
@@ -42,8 +44,8 @@ import Control.Exception (catch)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
 import Control.Monad (void)
 import qualified Miso.FFI as MisoFFI
-import Miso.FFI (Response(body, status))
-import Miso.String (MisoString, ms)
+import Miso.FFI (Response(body, errorMessage, status))
+import Miso.String (MisoString, fromMisoString, ms)
 import qualified Servant.Miso.Client as MisoClient
 #endif
 
@@ -73,31 +75,40 @@ newtype ClientEnv
 
 data ClientAsync m result where
 #ifdef VANILLA
-  ClientAsync :: Async raw -> (raw -> m result) -> (SomeException -> m result) -> ClientAsync m result
+  ClientAsync :: Async raw -> (raw -> m result) -> ClientAsync m result
 #else
-  ClientAsync :: MVar (Either SomeException raw) -> (raw -> m result) -> (SomeException -> m result) -> ClientAsync m result
+  ClientAsync :: MVar (Either SomeException raw) -> (raw -> m result) -> ClientAsync m result
 #endif
 
-newtype ClientError
-#ifdef VANILLA
-  = ClientError NativeServantClient.ClientError
-#else
-  = ClientError (Response MisoString)
-#endif
+data ClientError
+  = HttpError Int Text
+  | RequestException SomeException
+  | InvalidResponse (Maybe Int) Text
+  deriving stock (Show)
 
 clientErrorStatus :: ClientError -> Maybe Int
+clientErrorStatus (HttpError code _) = Just code
+clientErrorStatus (InvalidResponse code _) = code
+clientErrorStatus (RequestException _) = Nothing
+
 #ifdef VANILLA
-clientErrorStatus (ClientError err) = case err of
-  NativeServantClient.FailureResponse _ response -> responseStatus response
-  NativeServantClient.DecodeFailure _ response -> responseStatus response
-  NativeServantClient.UnsupportedContentType _ response -> responseStatus response
-  NativeServantClient.InvalidContentTypeHeader response -> responseStatus response
-  NativeServantClient.ConnectionError _ -> Nothing
+fromNativeClientError :: NativeServantClient.ClientError -> ClientError
+fromNativeClientError err = case err of
+  NativeServantClient.FailureResponse _ response -> HttpError (responseStatus response) (Text.pack (show err))
+  NativeServantClient.DecodeFailure message response -> InvalidResponse (Just (responseStatus response)) message
+  NativeServantClient.UnsupportedContentType _ response -> InvalidResponse (Just (responseStatus response)) (Text.pack (show err))
+  NativeServantClient.InvalidContentTypeHeader response -> InvalidResponse (Just (responseStatus response)) (Text.pack (show err))
+  NativeServantClient.ConnectionError exception -> RequestException exception
   where
-    responseStatus :: NativeServantClient.ResponseF a -> Maybe Int
-    responseStatus = Just . HttpStatus.statusCode . NativeServantClient.responseStatusCode
+    responseStatus :: NativeServantClient.ResponseF a -> Int
+    responseStatus = HttpStatus.statusCode . NativeServantClient.responseStatusCode
 #else
-clientErrorStatus (ClientError response) = status response
+fromBrowserClientError :: Response MisoString -> ClientError
+fromBrowserClientError response = case status response of
+  Just code | code >= 100 && code < 600 && (code < 200 || code >= 300) -> HttpError code message
+  code -> InvalidResponse code message
+  where
+    message = maybe (fromMisoString (body response)) fromMisoString (errorMessage response)
 #endif
 
 #ifdef VANILLA
@@ -167,7 +178,6 @@ data RetryPolicy m a result where
     :: { retryInitialState :: state
        , retryOnError :: state -> ClientError -> IO (Either state raw)
        , retryOnSuccess :: a -> IO raw
-       , retryOnException :: SomeException -> m result
        , retryFinish :: raw -> m result
        }
     -> RetryPolicy m a result
@@ -175,14 +185,12 @@ data RetryPolicy m a result where
 noRetry
   :: (ClientError -> IO raw)
   -> (a -> IO raw)
-  -> (SomeException -> m result)
   -> (raw -> m result)
   -> RetryPolicy m a result
-noRetry onError retryOnSuccess retryOnException retryFinish = RetryPolicy
+noRetry onError retryOnSuccess retryFinish = RetryPolicy
   { retryInitialState = ()
   , retryOnError = \_ err -> Right <$> onError err
   , retryOnSuccess
-  , retryOnException
   , retryFinish
   }
 
@@ -190,37 +198,47 @@ runClientAsync :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m (C
 #ifdef VANILLA
 runClientAsync RetryPolicy{..} (ClientRequest request) = liftIO $ do
   worker <- async (go retryInitialState)
-  pure (ClientAsync worker retryFinish retryOnException)
+  pure (ClientAsync worker retryFinish)
   where
     go state = do
-      response <- request
+      response <- tryJust synchronousException request
       case response of
-        Left err -> do
+        Left exception -> handleError state (RequestException exception)
+        Right (Left err) -> handleError state err
+        Right (Right value) -> retryOnSuccess value >>= evaluate
+    handleError state err = do
           decision <- retryOnError state err
           case decision of
             Left nextState -> go nextState
             Right raw -> evaluate raw
-        Right value -> retryOnSuccess value >>= evaluate
 #else
 
 runClientAsync RetryPolicy{..} request = liftIO $ do
   result <- newEmptyMVar
   let complete = void . tryPutMVar result . Right
       onFailureException = void . tryPutMVar result . Left
-      startAttempt state = request onSuccess (onFailure state) `catch` onFailureException
+      startAttempt state = (do
+        launched <- tryJust synchronousException (request onSuccess (onFailure state))
+        case launched of
+          Left exception -> handleError state (RequestException exception)
+          Right () -> pure ()) `catch` onFailureException
       onSuccess response = (retryOnSuccess (body response) >>= evaluate >>= complete) `catch` onFailureException
-      onFailure state response =
-        (do
-          decision <- retryOnError state (ClientError response)
-          case decision of
-            Left nextState -> startAttempt nextState
-            Right raw -> evaluate raw >>= complete)
-        `catch` onFailureException
+      onFailure state response = handleError state (fromBrowserClientError response) `catch` onFailureException
+      handleError state err = do
+        decision <- retryOnError state err
+        case decision of
+          Left nextState -> startAttempt nextState
+          Right raw -> evaluate raw >>= complete
   startAttempt retryInitialState
-  pure (ClientAsync result retryFinish retryOnException)
+  pure (ClientAsync result retryFinish)
 #endif
 
-runClient :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m result
+synchronousException :: SomeException -> Maybe SomeException
+synchronousException exception = case fromException exception :: Maybe SomeAsyncException of
+  Just _ -> Nothing
+  Nothing -> Just exception
+
+runClient :: (MonadIO m, MonadThrow m) => RetryPolicy m a result -> ClientRequest a -> m result
 runClient policy request = awaitClient =<< runClientAsync policy request
 
 clientWithEnv ::
@@ -238,18 +256,18 @@ clientWithEnv (ClientEnv env) api =
   where
     nativeRunClientM :: NativeServantClient.ClientM a -> ClientRequest a 
     nativeRunClientM request = ClientRequest $
-      Bifunctor.first ClientError <$> NativeServantClient.runClientM request env
+      Bifunctor.first fromNativeClientError <$> NativeServantClient.runClientM request env
 #else
 clientWithEnv (ClientEnv (BaseUrl url)) = MisoClient.toClient url
 #endif
 
-awaitClient :: MonadIO m => ClientAsync m result -> m result
+awaitClient :: (MonadIO m, MonadThrow m) => ClientAsync m result -> m result
 #ifdef VANILLA
-awaitClient (ClientAsync asyncRequest finish onException) = do
+awaitClient (ClientAsync asyncRequest finish) = do
   outcome <- liftIO (waitCatch asyncRequest)
-  either onException finish outcome
+  either throwM finish outcome
 #else
-awaitClient (ClientAsync result finish onException) = do
+awaitClient (ClientAsync result finish) = do
   outcome <- liftIO (readMVar result)
-  either onException finish outcome
+  either throwM finish outcome
 #endif

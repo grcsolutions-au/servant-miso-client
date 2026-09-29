@@ -28,6 +28,7 @@ import           Data.Kind
 import           Data.Map (Map)
 -----------------------------------------------------------------------------
 import           Miso (JSVal, ToJSVal(..), fromJSValUnchecked, CONTENT_TYPE(..))
+import qualified Miso.DSL as JS
 import           Miso.FFI (fetch, Blob, ArrayBuffer, File, URLSearchParams, FormData, Response(..))
 import           Miso.String
 import qualified Miso.String as MS
@@ -185,15 +186,14 @@ instance (MimeUnrender t response, ReflectMethod method) => HasClient (Verb meth
   toClientInternal Proxy req@Request {..} successful errorful = do
     body_ <- sequenceA _reqBody
     fetch (makeFullPath req) method body_ (M.toList (_headers <> acceptHeader))
-      successed errorful (mimeUnrenderType (Proxy @t) (Proxy @response))
+      successed (onFetchError errorful) (mimeUnrenderType (Proxy @t) (Proxy @response))
         where
           method = ms $ reflectMethod (Proxy @method)
           acceptHeader = M.singleton (ms "Accept") (ms (show (contentType (Proxy @t))))
           successed resp@Response {..} = do
             mimeUnrender (Proxy @t) body >>= \case
               Left errorMessage_ -> do
-                body_ <- fromJSValUnchecked body
-                errorful resp { errorMessage = Just errorMessage_, body = body_ }
+                errorful resp { errorMessage = Just errorMessage_, body = errorMessage_ }
               Right result ->
                 successful $ resp { body = result }
 -----------------------------------------------------------------------------
@@ -205,10 +205,25 @@ instance ReflectMethod method => HasClient (NoContentVerb method) where
   toClientInternal Proxy req@Request {..} successful errorful = do
     body_ <- sequenceA _reqBody
     fetch (makeFullPath req) method body_ (M.toList (_headers <> acceptHeader))
-      successful errorful NONE
+      successful (onFetchError errorful) NONE
         where
           method = ms $ reflectMethod (Proxy @method)
           acceptHeader = M.singleton (ms "Accept") (ms "*/*")
+-----------------------------------------------------------------------------
+onFetchError :: (Response MisoString -> IO ()) -> Response JSVal -> IO ()
+onFetchError errorful response@Response {..} = do
+  message <- case errorMessage of
+    Just text -> pure text
+    Nothing -> do
+      missingBody <- (||) <$> JS.isNull body <*> JS.isUndefined body
+      if missingBody
+        then pure (ms "Request failed")
+        else do
+          reason <- JS.getProp (ms "message") body
+          missingReason <- (||) <$> JS.isNull reason <*> JS.isUndefined reason
+          text <- JS.jsgf (ms "String") (if missingReason then body else reason)
+          JS.fromJSValUnchecked text
+  errorful response { errorMessage = Just message, body = message }
 -----------------------------------------------------------------------------
 makeFullPath :: Request -> MisoString
 makeFullPath Request {..} = path <> queryParams <> queryFlags <> fragments

@@ -18,6 +18,7 @@ executable servant-multipart-miso-drop-in-client-test-client
   build-depends:
     base < 5,
     bytestring,
+    exceptions,
     text,
     transformers,
     servant-miso-drop-in-api,
