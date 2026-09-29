@@ -210,6 +210,14 @@ instance ReflectMethod method => HasClient (NoContentVerb method) where
           method = ms $ reflectMethod (Proxy @method)
           acceptHeader = M.singleton (ms "Accept") (ms "*/*")
 -----------------------------------------------------------------------------
+-- | Convert Miso's raw fetch failure into the public text error callback.
+-- A rejected fetch promise can put a JS Error in the body with no errorMessage;
+-- a synchronous fetch failure can instead set errorMessage with a null body.
+-- Decoding either body directly as text would lose the reason or fail. Prefer
+-- errorMessage, then the body's message property, then its string form, with a
+-- fallback for null/undefined bodies. Set both text fields so direct callers
+-- and compatibility clients see the same diagnostic, while preserving the
+-- original status and headers for HTTP/decode error classification.
 onFetchError :: (Response MisoString -> IO ()) -> Response JSVal -> IO ()
 onFetchError errorful response@Response {..} = do
   message <- case errorMessage of

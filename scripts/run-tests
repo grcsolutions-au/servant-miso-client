@@ -5,6 +5,8 @@ set -euo pipefail
 client_target=exe:servant-multipart-miso-drop-in-client-test-client
 server_target=exe:servant-multipart-miso-drop-in-client-test-server
 test_port=8090
+native_builddir=dist-newstyle/native
+wasm_builddir=dist-newstyle/wasm
 ghcjs_builddir=dist-newstyle/ghcjs
 
 project_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -14,12 +16,20 @@ if [[ -z "$project_root" || ! -f "$project_root/cabal.project" ]]; then
 fi
 cd "$project_root"
 
-for tool in node wasm32-wasi-cabal wasm32-wasi-ghc javascript-unknown-ghcjs-ghc javascript-unknown-ghcjs-ghc-pkg; do
+for tool in node npm wasm32-wasi-cabal wasm32-wasi-ghc javascript-unknown-ghcjs-ghc javascript-unknown-ghcjs-ghc-pkg; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     printf '%s is required to run all client tests\n' "$tool" >&2
     exit 1
   fi
 done
+export CHROMIUM_BIN="${CHROMIUM_BIN:-$(command -v chromium || true)}"
+if [[ ! -x "$CHROMIUM_BIN" ]]; then
+  printf 'Chromium is required for browser engine tests (set CHROMIUM_BIN)\n' >&2
+  exit 1
+fi
+if [[ ! -f node_modules/playwright/package.json || ! -f node_modules/@bjorn3/browser_wasi_shim/package.json ]]; then
+  npm ci --ignore-scripts --no-audit --no-fund
+fi
 
 cleanup_server() {
   if [[ -n "${server_pid:-}" ]]; then
@@ -30,8 +40,8 @@ cleanup_server() {
 }
 trap cleanup_server EXIT
 
-cabal build "$client_target" "$server_target"
-server_bin="$(cabal list-bin "$server_target" | tail -n 1)"
+cabal build --builddir="$native_builddir" "$client_target" "$server_target"
+server_bin="$(cabal list-bin --builddir="$native_builddir" "$server_target" | tail -n 1)"
 start_server() {
   if (echo >/dev/tcp/127.0.0.1/"$test_port") 2>/dev/null; then
     printf 'test port %s is already in use\n' "$test_port" >&2
@@ -55,15 +65,14 @@ start_server() {
 
 printf '\n==> native client test\n'
 start_server
-client_bin="$(cabal list-bin "$client_target" | tail -n 1)"
+client_bin="$(cabal list-bin --builddir="$native_builddir" "$client_target" | tail -n 1)"
 "$client_bin"
 cleanup_server
 
 run_wasm_test() {
   printf '\n==> WASM client test\n'
-  wasm32-wasi-cabal build "$client_target"
-  local wasm_bin jsffi_path
-  wasm_bin="$(wasm32-wasi-cabal list-bin "$client_target" | tail -n 1)"
+  wasm32-wasi-cabal build --builddir="$wasm_builddir" "$client_target"
+  wasm_bin="$(wasm32-wasi-cabal list-bin --builddir="$wasm_builddir" "$client_target" | tail -n 1)"
   jsffi_path="$(dirname "$wasm_bin")/ghc_wasm_jsffi.mjs"
   node "$(wasm32-wasi-ghc --print-libdir)/post-link.mjs" --input "$wasm_bin" --output "$jsffi_path"
   node scripts/run-browser-client.mjs wasm "$wasm_bin" "$project_root/../miso/js/miso.js" "$jsffi_path"
@@ -76,7 +85,6 @@ run_ghcjs_test() {
     --with-compiler=javascript-unknown-ghcjs-ghc \
     --with-hc-pkg=javascript-unknown-ghcjs-ghc-pkg \
     "$client_target"
-  local ghcjs_bin
   ghcjs_bin="$(cabal list-bin \
     --builddir="$ghcjs_builddir" \
     --with-compiler=javascript-unknown-ghcjs-ghc \
@@ -89,6 +97,16 @@ start_server
 run_wasm_test
 cleanup_server
 
+printf '\n==> WASM Chromium client test\n'
+start_server
+node scripts/run-browser-engine.mjs wasm "$wasm_bin" "$project_root/../miso/js/miso.js" "$jsffi_path"
+cleanup_server
+
 start_server
 run_ghcjs_test
+cleanup_server
+
+printf '\n==> GHCJS Chromium client test\n'
+start_server
+node scripts/run-browser-engine.mjs ghcjs "${ghcjs_bin}.jsexe/all.js" "$project_root/../miso/js/miso.js"
 cleanup_server

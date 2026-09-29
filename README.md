@@ -64,9 +64,13 @@ fill one final-result MVar when the IO retry loop finishes.
 nix develop -c scripts/run-tests
 ```
 
-The runner builds and executes native, WASM, and GHCJS clients against a fresh
-native test server for each target. It requires the local Miso checkout used by
-`cabal.project`, the cross-compilers, and Node.js with WASI support.
+The runner builds native, WASM, and GHCJS clients in separate Cabal build
+directories and executes all three against a fresh native test server per run.
+It also executes WASM and GHCJS in headless Chromium using Playwright, with a
+locally installed browser WASI shim (installed via `npm ci` on first run).
+The Nix development shell provides Chromium on Linux; set `CHROMIUM_BIN` to a
+different Chromium executable when needed. The local Miso checkout used by
+`cabal.project`, the cross-compilers, Node.js, and npm are also required.
 
 
 ```haskell

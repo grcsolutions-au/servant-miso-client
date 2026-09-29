@@ -2,4 +2,5 @@
 dist*
 result
 public
+node_modules/
 /.direnv

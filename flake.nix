@@ -13,7 +13,7 @@
         mkShell = shellInputs:
           pkgs.mkShell {
             inputsFrom = shellInputs;
-            packages = [ pkgs.zlib testScript ];
+            packages = [ pkgs.zlib testScript ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ];
             shellHook = ''
               export MISO=${inputs.miso}
             '';
