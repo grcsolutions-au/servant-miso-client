@@ -6,7 +6,7 @@
 module Main where
 
 import Control.Monad (unless, void)
-import Control.Exception (SomeException)
+import Control.Exception (AsyncException(ThreadKilled), SomeException, throwIO)
 import qualified Control.Monad.Catch as Catch
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, catchE, runExceptT, throwE)
@@ -26,8 +26,11 @@ import qualified Servant.Client.Compat as Client
 import qualified System.Exit as Exit
 
 #ifdef VANILLA
+import Control.Concurrent (forkIO, killThread)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import System.Directory (getTemporaryDirectory)
 import System.IO (hClose, openTempFile)
+import System.Timeout (timeout)
 #else
 import Servant.API.Compat (NoContentVerb, StdMethod(GET))
 import Miso.DSL (jsg, new)
@@ -110,21 +113,15 @@ runClientTest = do
   echoResponse <- Client.runClient noRetry echoGet
   liftIO $ expect ("/get" `isInfixOf` unpack (url echoResponse)) "echo server did not return the request URL"
   expectStatus 418 (Client.runClient noRetry (echoStatus 418))
-  asyncRequest <- Client.runClientAsync noRetry (uploadRequest requestBody)
-  response <- Client.awaitClient asyncRequest
+  response <- Client.runClient noRetry (uploadRequest requestBody)
   liftIO $ expect (response == expectedAck)
     ("unexpected response: " <> pack (show response))
 
-  retried <- Client.runClientAsync retryExcept (retryRequest 2)
-  first <- Client.awaitClient retried
-  second <- Client.awaitClient retried
-  liftIO $ expect (first == 3 && second == 3) "retry result changed across awaits"
+  retried <- Client.runClient retryExcept (retryRequest 2)
+  liftIO $ expect (retried == 3) "retry result was incorrect"
   nextAttempt <- Client.runClient noRetry (retryRequest 2)
-  liftIO $ expect (nextAttempt == 4) "awaiting repeated the HTTP request"
+  liftIO $ expect (nextAttempt == 4) "a scoped run repeated the HTTP request"
 
-  failed <- Client.runClientAsync retryExcept (retryRequest 20)
-  expectStatus503 (Client.awaitClient failed)
-  expectStatus503 (Client.awaitClient failed)
   expectStatus503 (Client.runClient retryExcept (retryRequest 20))
   let diagnostic = Client.RetryPolicy
         { Client.retryInitialState = 0 :: Int
@@ -151,14 +148,10 @@ runClientTest = do
         , Client.retryOnSuccess = pure . show
         , Client.retryFinish = pure
         } :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int String
-  failedDecision <- Client.runClientAsync unexpected (retryRequest 23)
-  expectThrown "retry decision failed" (Client.awaitClient failedDecision)
-  expectThrown "retry decision failed" (Client.awaitClient failedDecision)
+  expectThrown "retry decision failed" (Client.runClient unexpected (retryRequest 23))
   expectThrown "retry decision failed" (Client.runClient unexpected (retryRequest 24))
   let failedSuccess = Client.noRetry (pure . Left) (\_ -> ioError (userError "success handler failed")) (either throwE pure)
-  failedSuccessRequest <- Client.runClientAsync failedSuccess (retryRequest 0)
-  expectThrown "success handler failed" (Client.awaitClient failedSuccessRequest)
-  expectThrown "success handler failed" (Client.awaitClient failedSuccessRequest)
+  expectThrown "success handler failed" (Client.runClient failedSuccess (retryRequest 0))
 
   rawExecutions <- liftIO (newIORef (0 :: Int))
   finishExecutions <- liftIO (newIORef (0 :: Int))
@@ -167,20 +160,49 @@ runClientTest = do
         (\outcome -> do
           liftIO (modifyIORef' finishExecutions (+ 1))
           either throwE pure outcome)
-  countedRequest <- Client.runClientAsync counted (retryRequest 0)
-  countedFirst <- Client.awaitClient countedRequest
-  countedSecond <- Client.awaitClient countedRequest
+  countedResult <- Client.runClient counted (retryRequest 0)
   rawCount <- liftIO (readIORef rawExecutions)
   finishCount <- liftIO (readIORef finishExecutions)
-  liftIO $ expect (countedFirst > 0 && countedFirst == countedSecond && rawCount == 1 && finishCount == 2)
-    "raw result was repeated or the finalizer did not run per await"
+  liftIO $ expect (countedResult > 0 && rawCount == 1 && finishCount == 1)
+    "raw result or finalizer did not run exactly once"
+
+  asyncRetries <- liftIO (newIORef (0 :: Int))
+  let asyncFailure = Client.RetryPolicy
+        { Client.retryInitialState = ()
+        , Client.retryOnError = \_ _ -> do
+            modifyIORef' asyncRetries (+ 1)
+            pure (Right 0)
+        , Client.retryOnSuccess = \_ -> throwIO ThreadKilled
+        , Client.retryFinish = pure
+        } :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int Int
+  expectThrown "thread killed" (Client.runClient asyncFailure (retryRequest 0))
+  asyncRetryCount <- liftIO (readIORef asyncRetries)
+  liftIO $ expect (asyncRetryCount == 0) "asynchronous exception reached the retry policy"
+#ifdef VANILLA
+  blocked <- liftIO newEmptyMVar
+  hookStarted <- liftIO newEmptyMVar
+  workerFinished <- liftIO newEmptyMVar
+  let interruptedPolicy = Client.noRetry (\_ -> pure 0)
+        (\_ -> putMVar hookStarted () >> takeMVar blocked >> pure 0)
+        pure :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int Int
+  worker <- liftIO $ forkIO $ do
+    outcome <- Catch.try (runExceptT (Client.runClient interruptedPolicy (retryRequest 0)))
+      :: IO (Either SomeException (Either Client.ClientError Int))
+    putMVar workerFinished outcome
+  liftIO (takeMVar hookStarted)
+  liftIO (killThread worker)
+  interrupted <- liftIO (timeout 1000000 (takeMVar workerFinished))
+  liftIO $ case interrupted of
+    Just (Left exception) ->
+      expect ("thread killed" `isInfixOf` show exception) "caller interruption changed unexpectedly"
+    Just (Right _) -> failTest "interrupted scoped run returned normally"
+    Nothing -> failTest "interrupted scoped run did not terminate"
+#endif
 
   let throwingPolicy = Client.noRetry (pure . Left)
         (\_ -> ioError (userError "raw handler failed"))
         (either throwE pure)
-  failedHandler <- Client.runClientAsync throwingPolicy (retryRequest 0)
-  expectThrown "raw handler failed" (Client.awaitClient failedHandler)
-  expectThrown "raw handler failed" (Client.awaitClient failedHandler)
+  expectThrown "raw handler failed" (Client.runClient throwingPolicy (retryRequest 0))
   let wrongResult = Client.clientWithEnv clientEnv (Proxy @WrongResultAPI)
   expectInvalid200 (Client.runClient noRetry (wrongResult 0))
 #ifndef VANILLA
@@ -192,8 +214,7 @@ runClientTest = do
       immediateRequest onSuccess _ = onSuccess (Response (Just 200) mempty Nothing 1)
       immediatePolicy = Client.noRetry (pure . Left)
         (\_ -> ioError (userError "synchronous handler failed")) (either throwE pure)
-  immediate <- Client.runClientAsync immediatePolicy immediateRequest
-  expectThrown "synchronous handler failed" (Client.awaitClient immediate)
+  expectThrown "synchronous handler failed" (Client.runClient immediatePolicy immediateRequest)
   let failedLaunch :: Client.ClientRequest Int
       failedLaunch _ _ = ioError (userError "request launch failed")
       launchPolicy = Client.RetryPolicy

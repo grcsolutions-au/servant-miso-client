@@ -3,14 +3,12 @@
 module Servant.Client.Compat
   ( BaseUrl
   , Client
-  , ClientAsync
   , ClientEnv
   , ClientError(..)
   , ClientRequest
   , Manager
   , RetryPolicy(..)
   , Scheme(..)
-  , awaitClient
   , clientErrorStatus
   , clientWithEnv
   , consoleError
@@ -20,7 +18,6 @@ module Servant.Client.Compat
   , newManager
   , noRetry
   , runClient
-  , runClientAsync
   ) where
 
 
@@ -32,7 +29,6 @@ import qualified Control.Exception.Safe as Safe
 
 #ifdef VANILLA
 import qualified Data.Text as Text
-import Control.Concurrent.Async (Async, async, wait)
 import qualified Data.Bifunctor as Bifunctor
 import qualified Data.Text.IO as TextIO
 import qualified Network.HTTP.Client as HttpClient
@@ -40,9 +36,9 @@ import qualified Network.HTTP.Types.Status as HttpStatus
 import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
-import Control.Exception (throwIO)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
-import Control.Monad (void)
+import Control.Concurrent.MVar (newEmptyMVar, readMVar, tryPutMVar)
+import qualified Control.Exception as Exception
+import Data.IORef (atomicModifyIORef', newIORef)
 import qualified Miso.FFI as MisoFFI
 import Miso.FFI (Response(body, errorMessage, status))
 import Miso.String (MisoString, fromMisoString, ms)
@@ -71,13 +67,6 @@ newtype ClientEnv
   = ClientEnv NativeServantClient.ClientEnv
 #else
   = ClientEnv BaseUrl
-#endif
-
-data ClientAsync m result where
-#ifdef VANILLA
-  ClientAsync :: Async raw -> (raw -> m result) -> ClientAsync m result
-#else
-  ClientAsync :: MVar (Either SomeException raw) -> (raw -> m result) -> ClientAsync m result
 #endif
 
 data ClientError
@@ -194,11 +183,11 @@ noRetry onError retryOnSuccess retryFinish = RetryPolicy
   , retryFinish
   }
 
-runClientAsync :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m (ClientAsync m result)
 #ifdef VANILLA
-runClientAsync RetryPolicy{..} (ClientRequest request) = liftIO $ do
-  worker <- async (go retryInitialState)
-  pure (ClientAsync worker retryFinish)
+runClient :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m result
+runClient RetryPolicy{..} (ClientRequest request) = do
+  raw <- liftIO (go retryInitialState)
+  retryFinish raw
   where
     go state = do
       response <- Safe.tryAny request
@@ -207,38 +196,87 @@ runClientAsync RetryPolicy{..} (ClientRequest request) = liftIO $ do
         Right (Left err) -> handleError state err
         Right (Right value) -> retryOnSuccess value >>= evaluate
     handleError state err = do
-          decision <- retryOnError state err
-          case decision of
-            Left nextState -> go nextState
-            Right raw -> evaluate raw
+      decision <- retryOnError state err
+      case decision of
+        Left nextState -> go nextState
+        Right raw -> evaluate raw
 #else
-
--- for tomorrow
--- What happens if runClientAsync gets an asynchronous exception?
--- Perhaps we could unify this library to just have runClient and awaitClient to have
--- a similar interface to ""
-runClientAsync RetryPolicy{..} request = liftIO $ do
-  result <- newEmptyMVar
-  let complete = void . tryPutMVar result . Right
-      onFailureException = void . tryPutMVar result . Left
-      startAttempt state = (do
-        launched <- Safe.tryAny (request onSuccess (onFailure state))
-        case launched of
-          Left exception -> handleError state (RequestException exception)
-          Right () -> pure ()) `Safe.catchAny` onFailureException
-      onSuccess response = (retryOnSuccess (body response) >>= evaluate >>= complete) `Safe.catchAny` onFailureException
-      onFailure state response = handleError state (fromBrowserClientError response) `Safe.catchAny` onFailureException
-      handleError state err = do
-        decision <- retryOnError state err
-        case decision of
-          Left nextState -> startAttempt nextState
-          Right raw -> evaluate raw >>= complete
-  startAttempt retryInitialState
-  pure (ClientAsync result retryFinish)
-#endif
+data BrowserState
+  = BrowserNotStarted
+  | BrowserAttempt Int
+  | BrowserHandling Int
+  | BrowserFinished
+  | BrowserAbandoned
 
 runClient :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m result
-runClient policy request = awaitClient =<< runClientAsync policy request
+runClient RetryPolicy{..} request = do
+  raw <- liftIO runBrowser
+  retryFinish raw
+  where
+    runBrowser = Exception.mask $ \restore -> do
+      state <- newIORef BrowserNotStarted
+      result <- newEmptyMVar
+      let finish generation outcome = do
+            accepted <- atomicModifyIORef' state $ \current -> case current of
+              BrowserHandling active | active == generation -> (BrowserFinished, True)
+              _ -> (current, False)
+            if accepted
+              then do
+                _ <- tryPutMVar result outcome
+                pure ()
+              else pure ()
+          finishException exception = do
+            accepted <- atomicModifyIORef' state $ \current -> case current of
+              BrowserAttempt _ -> (BrowserFinished, True)
+              BrowserHandling _ -> (BrowserFinished, True)
+              _ -> (current, False)
+            if accepted
+              then do
+                _ <- tryPutMVar result (Left exception)
+                pure ()
+              else pure ()
+          supervise action = do
+            outcome <- Exception.try action :: IO (Either SomeException ())
+            case outcome of
+              Left exception -> finishException exception
+              Right () -> pure ()
+          claim generation = atomicModifyIORef' state $ \current -> case current of
+            BrowserAttempt active | active == generation -> (BrowserHandling generation, True)
+            _ -> (current, False)
+          callback generation action = supervise $ do
+            accepted <- claim generation
+            if accepted then action else pure ()
+          startAttempt generation retryState = do
+            started <- atomicModifyIORef' state $ \current -> case current of
+              BrowserNotStarted | generation == 0 -> (BrowserAttempt generation, True)
+              BrowserHandling previous | generation == previous + 1 -> (BrowserAttempt generation, True)
+              _ -> (current, False)
+            if not started
+              then pure ()
+              else supervise $ do
+                launched <- Safe.tryAny $ request
+                  (\response -> callback generation $ do
+                    raw <- retryOnSuccess (body response) >>= evaluate
+                    finish generation (Right raw))
+                  (\response -> callback generation $
+                    handleError generation retryState (fromBrowserClientError response))
+                case launched of
+                  Left exception -> callback generation $
+                    handleError generation retryState (RequestException exception)
+                  Right () -> pure ()
+          handleError generation retryState err = do
+            decision <- retryOnError retryState err
+            case decision of
+              Left nextState -> startAttempt (generation + 1) nextState
+              Right raw -> evaluate raw >>= finish generation . Right
+          abandon = atomicModifyIORef' state $ \current -> case current of
+            BrowserFinished -> (current, ())
+            BrowserAbandoned -> (current, ())
+            _ -> (BrowserAbandoned, ())
+      restore (startAttempt 0 retryInitialState) `Exception.onException` abandon
+      outcome <- restore (readMVar result) `Exception.onException` abandon
+      either Exception.throwIO pure outcome
+#endif
 
 clientWithEnv ::
 #ifdef VANILLA
@@ -260,9 +298,3 @@ clientWithEnv (ClientEnv env) api =
 clientWithEnv (ClientEnv (BaseUrl url)) = MisoClient.toClient url
 #endif
 
-awaitClient :: MonadIO m => ClientAsync m result -> m result
-#ifdef VANILLA
-awaitClient (ClientAsync asyncRequest finish) = liftIO (wait asyncRequest) >>= finish
-#else
-awaitClient (ClientAsync result finish) = liftIO (readMVar result >>= either throwIO pure) >>= finish
-#endif

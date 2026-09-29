@@ -40,23 +40,24 @@ policy = RetryPolicy
 
 runClientTest :: ClientRequest Int -> ExceptT ClientError IO ()
 runClientTest request = do
-  pending <- runClientAsync policy request
-  response <- awaitClient pending
+  response <- runClient policy request
   liftIO (print response)
 ```
 
 An executable's `main :: IO ()` can interpret `runExceptT (runClientTest request)`
 once and handle any remaining `ClientError` there. `runClient policy request`
-returns the same result in `ExceptT` for calls that do not need an async handle.
+performs the complete request and retry loop in the caller's scope, then runs
+`retryFinish` once in the caller's monad.
 
 The policy can use other raw outcomes and monads, such as `Maybe a` converted
 to `MaybeT IO a`. Request and transport failures can reach `retryOnError` and
-be retried; exceptions from policy hooks are never retried or converted into
-`ClientError`. They are cached and rethrown on await via `MonadThrow m`. IO
 decisions and outcome handlers run once; repeated awaits reuse the raw outcome
-but run `retryFinish` again in `m`. Exceptions from `retryFinish` occur on each
-await. Native calls start one `async` worker for all attempts; browser calls
-fill one final-result MVar when the IO retry loop finishes.
+be retried. Asynchronous exceptions are never converted to `RequestException`
+or passed to `retryOnError`. Exceptions from policy hooks are terminal and
+propagate to the caller. Browser calls remain scoped while awaiting a response;
+if the caller is interrupted, the run is abandoned and late callbacks cannot
+start retries or alter its result. There is no detached request handle or
+reusable result.
 
 ### Integration tests
 
