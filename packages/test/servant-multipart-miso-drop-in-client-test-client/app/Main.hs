@@ -105,6 +105,11 @@ runClientTest = do
       clientEnv = Client.mkClientEnv manager baseUrl
       uploadRequest :<|> retryRequest = Client.clientWithEnv clientEnv (Proxy @TestAPI)
       noRetry = Client.noRetry (pure . Left) (pure . Right) (either throwE pure)
+      echoEnv = Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" 8081 "")
+      echoGet :<|> echoStatus = Client.clientWithEnv echoEnv (Proxy @EchoAPI)
+    echoResponse <- Client.runClient noRetry echoGet
+    liftIO $ expect ("/get" `isInfixOf` unpack (url echoResponse)) "echo server did not return the request URL"
+    expectStatus 418 (Client.runClient noRetry (echoStatus 418))
   asyncRequest <- Client.runClientAsync noRetry (uploadRequest requestBody)
   response <- Client.awaitClient asyncRequest
   liftIO $ expect (response == expectedAck)
@@ -204,7 +209,7 @@ runClientTest = do
   liftIO $ expect (launchAttempts == 2) "request launch was not retried"
 #endif
   let unavailable = Client.clientWithEnv
-        (Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" (testPort + 1) ""))
+      (Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" (testPort + 2) ""))
         (Proxy @TestAPI)
       _ :<|> unavailableRetry = unavailable
       connectionPolicy = Client.noRetry (pure . Left) (pure . Right) (either throwE pure)
@@ -227,6 +232,11 @@ expectStatus503 request =
       Client.HttpError 503 message -> expect (not (Text.null message)) "missing HTTP error message"
       _ -> failTest "unexpected retry failure"
 
+expectStatus :: Int -> ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
+expectStatus status request =
+  (void request >> liftIO (failTest ("expected HTTP " <> pack (show status)))) `catchE` \err ->
+    liftIO $ expect (Client.clientErrorStatus err == Just status) "unexpected HTTP status"
+
 expectInvalid200 :: ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
 expectInvalid200 request =
   (void request >> liftIO (failTest "expected malformed 200 response")) `catchE` \err ->
@@ -245,4 +255,4 @@ expect :: Bool -> Text -> IO ()
 expect condition message = unless condition (failTest message)
 
 failTest :: Text -> IO a
-failTest message = consoleError ("ERROR: " <> message) >> Exit.exitFailure
+failTest message = consoleError ("ERROR: " <> message) >> consoleError "ERROR" >> Exit.exitFailure

@@ -1,9 +1,13 @@
 module Servant.Multipart.Miso.Test.UploadTypes
   ( UploadForm(..)
   , UploadAck(..)
+  , EchoGetResponse(..)
   , UploadAPI
   , RetryAPI
   , TestAPI
+  , EchoGetAPI
+  , EchoStatusAPI
+  , EchoAPI
   , testPort
   ) where
 
@@ -42,6 +46,11 @@ data UploadAck = UploadAck
   }
   deriving stock (Eq, Show, Generic)
 
+data EchoGetResponse = EchoGetResponse
+  { url :: Text
+  }
+  deriving stock (Eq, Show, Generic)
+
 instance Aeson.FromJSON UploadAck where
   parseJSON = Aeson.genericParseJSON Aeson.defaultOptions
 
@@ -54,14 +63,26 @@ instance MisoJSON.FromJSON UploadAck where
 instance MisoJSON.ToJSON UploadAck where
   toJSON = MisoJSON.genericToJSON MisoJSON.defaultOptions
 
+instance Aeson.FromJSON EchoGetResponse where
+  parseJSON = Aeson.genericParseJSON Aeson.defaultOptions
+
+instance MisoJSON.FromJSON EchoGetResponse where
+  parseJSON = MisoJSON.genericParseJSON MisoJSON.defaultOptions
+
 type UploadAPI = "upload" :> MultipartForm (MultipartCompat Tmp) UploadForm :> Post '[JSON] UploadAck
 
 type RetryAPI = "retry" :> Capture "failures" Int :> Get '[JSON] Int
 
 type TestAPI = UploadAPI :<|> RetryAPI
 
+type EchoGetAPI = "get" :> Get '[JSON] EchoGetResponse
+
+type EchoStatusAPI = "status" :> Capture "code" Int :> Get '[JSON] Int
+
+type EchoAPI = EchoGetAPI :<|> EchoStatusAPI
+
 testPort :: Int
-testPort = 8090
+testPort = 8080
 
 instance ToMultipart (MultipartCompat Tmp) UploadForm where
   toMultipart UploadForm{..} = MultipartData

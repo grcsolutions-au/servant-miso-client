@@ -28,11 +28,10 @@ import Data.Proxy (Proxy)
 import Data.Text (Text)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Exception (SomeException, SomeAsyncException, evaluate, fromException, tryJust)
-import Control.Monad.Catch (MonadThrow, throwM)
 
 #ifdef VANILLA
 import qualified Data.Text as Text
-import Control.Concurrent.Async (Async, async, waitCatch)
+import Control.Concurrent.Async (Async, async, wait)
 import qualified Data.Bifunctor as Bifunctor
 import qualified Data.Text.IO as TextIO
 import qualified Network.HTTP.Client as HttpClient
@@ -40,7 +39,7 @@ import qualified Network.HTTP.Types.Status as HttpStatus
 import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
-import Control.Exception (catch)
+import Control.Exception (catch, throwIO)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
 import Control.Monad (void)
 import qualified Miso.FFI as MisoFFI
@@ -238,7 +237,7 @@ synchronousException exception = case fromException exception :: Maybe SomeAsync
   Just _ -> Nothing
   Nothing -> Just exception
 
-runClient :: (MonadIO m, MonadThrow m) => RetryPolicy m a result -> ClientRequest a -> m result
+runClient :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m result
 runClient policy request = awaitClient =<< runClientAsync policy request
 
 clientWithEnv ::
@@ -261,13 +260,9 @@ clientWithEnv (ClientEnv env) api =
 clientWithEnv (ClientEnv (BaseUrl url)) = MisoClient.toClient url
 #endif
 
-awaitClient :: (MonadIO m, MonadThrow m) => ClientAsync m result -> m result
+awaitClient :: MonadIO m => ClientAsync m result -> m result
 #ifdef VANILLA
-awaitClient (ClientAsync asyncRequest finish) = do
-  outcome <- liftIO (waitCatch asyncRequest)
-  either throwM finish outcome
+awaitClient (ClientAsync asyncRequest finish) = liftIO (wait asyncRequest) >>= finish
 #else
-awaitClient (ClientAsync result finish) = do
-  outcome <- liftIO (readMVar result)
-  either throwM finish outcome
+awaitClient (ClientAsync result finish) = liftIO (readMVar result >>= either throwIO pure) >>= finish
 #endif

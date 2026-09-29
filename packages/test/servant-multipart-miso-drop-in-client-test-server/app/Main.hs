@@ -40,4 +40,7 @@ app = do
     pure (serve (Proxy @TestAPI) (uploadServer :<|> retryServer attempts))
 
 main :: IO ()
-main = app >>= run testPort
+main = app >>= run serverPort
+
+serverPort :: Int
+serverPort = 8090

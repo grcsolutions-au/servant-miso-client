@@ -15,6 +15,11 @@ if [[ -z "$project_root" || ! -f "$project_root/cabal.project" ]]; then
   exit 1
 fi
 cd "$project_root"
+if [[ ! -f "${MISO:-}/js/miso.js" ]]; then
+  printf 'MISO must point to the Miso flake source with js/miso.js (run via nix develop)\n' >&2
+  exit 1
+fi
+miso_js="$MISO/js/miso.js"
 
 for tool in node npm wasm32-wasi-cabal wasm32-wasi-ghc javascript-unknown-ghcjs-ghc javascript-unknown-ghcjs-ghc-pkg; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -75,7 +80,7 @@ run_wasm_test() {
   wasm_bin="$(wasm32-wasi-cabal list-bin --builddir="$wasm_builddir" "$client_target" | tail -n 1)"
   jsffi_path="$(dirname "$wasm_bin")/ghc_wasm_jsffi.mjs"
   node "$(wasm32-wasi-ghc --print-libdir)/post-link.mjs" --input "$wasm_bin" --output "$jsffi_path"
-  node scripts/run-browser-client.mjs wasm "$wasm_bin" "$project_root/../miso/js/miso.js" "$jsffi_path"
+  node scripts/run-browser-client.mjs wasm "$wasm_bin" "$miso_js" "$jsffi_path"
 }
 
 run_ghcjs_test() {
@@ -90,7 +95,7 @@ run_ghcjs_test() {
     --with-compiler=javascript-unknown-ghcjs-ghc \
     --with-hc-pkg=javascript-unknown-ghcjs-ghc-pkg \
     "$client_target" | tail -n 1)"
-  node scripts/run-browser-client.mjs ghcjs "${ghcjs_bin}.jsexe/all.js" "$project_root/../miso/js/miso.js"
+  node scripts/run-browser-client.mjs ghcjs "${ghcjs_bin}.jsexe/all.js" "$miso_js"
 }
 
 start_server
@@ -99,7 +104,7 @@ cleanup_server
 
 printf '\n==> WASM Chromium client test\n'
 start_server
-node scripts/run-browser-engine.mjs wasm "$wasm_bin" "$project_root/../miso/js/miso.js" "$jsffi_path"
+node scripts/run-browser-engine.mjs wasm "$wasm_bin" "$miso_js" "$jsffi_path"
 cleanup_server
 
 start_server
@@ -108,5 +113,5 @@ cleanup_server
 
 printf '\n==> GHCJS Chromium client test\n'
 start_server
-node scripts/run-browser-engine.mjs ghcjs "${ghcjs_bin}.jsexe/all.js" "$project_root/../miso/js/miso.js"
+node scripts/run-browser-engine.mjs ghcjs "${ghcjs_bin}.jsexe/all.js" "$miso_js"
 cleanup_server
