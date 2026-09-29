@@ -27,7 +27,8 @@ module Servant.Client.Compat
 import Data.Proxy (Proxy)
 import Data.Text (Text)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Exception (SomeException, SomeAsyncException, evaluate, fromException, tryJust)
+import Control.Exception (SomeException, evaluate)
+import qualified Control.Exception.Safe as Safe
 
 #ifdef VANILLA
 import qualified Data.Text as Text
@@ -39,7 +40,7 @@ import qualified Network.HTTP.Types.Status as HttpStatus
 import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
-import Control.Exception (catch, throwIO)
+import Control.Exception (throwIO)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
 import Control.Monad (void)
 import qualified Miso.FFI as MisoFFI
@@ -200,7 +201,7 @@ runClientAsync RetryPolicy{..} (ClientRequest request) = liftIO $ do
   pure (ClientAsync worker retryFinish)
   where
     go state = do
-      response <- tryJust synchronousException request
+      response <- Safe.tryAny request
       case response of
         Left exception -> handleError state (RequestException exception)
         Right (Left err) -> handleError state err
@@ -212,17 +213,21 @@ runClientAsync RetryPolicy{..} (ClientRequest request) = liftIO $ do
             Right raw -> evaluate raw
 #else
 
+-- for tomorrow
+-- What happens if runClientAsync gets an asynchronous exception?
+-- Perhaps we could unify this library to just have runClient and awaitClient to have
+-- a similar interface to ""
 runClientAsync RetryPolicy{..} request = liftIO $ do
   result <- newEmptyMVar
   let complete = void . tryPutMVar result . Right
       onFailureException = void . tryPutMVar result . Left
       startAttempt state = (do
-        launched <- tryJust synchronousException (request onSuccess (onFailure state))
+        launched <- Safe.tryAny (request onSuccess (onFailure state))
         case launched of
           Left exception -> handleError state (RequestException exception)
-          Right () -> pure ()) `catch` onFailureException
-      onSuccess response = (retryOnSuccess (body response) >>= evaluate >>= complete) `catch` onFailureException
-      onFailure state response = handleError state (fromBrowserClientError response) `catch` onFailureException
+          Right () -> pure ()) `Safe.catchAny` onFailureException
+      onSuccess response = (retryOnSuccess (body response) >>= evaluate >>= complete) `Safe.catchAny` onFailureException
+      onFailure state response = handleError state (fromBrowserClientError response) `Safe.catchAny` onFailureException
       handleError state err = do
         decision <- retryOnError state err
         case decision of
@@ -231,11 +236,6 @@ runClientAsync RetryPolicy{..} request = liftIO $ do
   startAttempt retryInitialState
   pure (ClientAsync result retryFinish)
 #endif
-
-synchronousException :: SomeException -> Maybe SomeException
-synchronousException exception = case fromException exception :: Maybe SomeAsyncException of
-  Just _ -> Nothing
-  Nothing -> Just exception
 
 runClient :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m result
 runClient policy request = awaitClient =<< runClientAsync policy request
