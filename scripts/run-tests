@@ -110,7 +110,7 @@ start_echo_server() {
     printf 'echo test port %s is already in use\n' "$echo_port" >&2
     return 1
   fi
-  node scripts/echo-server.mjs &
+  node resources/echo-server.mjs &
   echo_pid=$!
   for _ in {1..100}; do
     if (echo >/dev/tcp/127.0.0.1/"$echo_port") 2>/dev/null; then
@@ -146,7 +146,7 @@ run_wasm_test() {
   wasm_bin="$(wasm32-wasi-cabal list-bin --builddir="$wasm_builddir" "$client_target" | tail -n 1)"
   jsffi_path="$(dirname "$wasm_bin")/ghc_wasm_jsffi.mjs"
   node "$(wasm32-wasi-ghc --print-libdir)/post-link.mjs" --input "$wasm_bin" --output "$jsffi_path"
-  node scripts/run-browser-client.mjs wasm "$wasm_bin" "$miso_js" "$jsffi_path"
+  node resources/run-browser-client.mjs wasm "$wasm_bin" "$miso_js" "$jsffi_path"
 }
 
 run_ghcjs_test() {
@@ -162,7 +162,7 @@ run_ghcjs_test() {
     --with-compiler=javascript-unknown-ghcjs-ghc \
     --with-hc-pkg=javascript-unknown-ghcjs-ghc-pkg \
     "$client_target" | tail -n 1)"
-  node scripts/run-browser-client.mjs ghcjs "${ghcjs_bin}.jsexe/all.js" "$miso_js"
+  node resources/run-browser-client.mjs ghcjs "${ghcjs_bin}.jsexe/all.js" "$miso_js"
 }
 
 start_server
@@ -172,7 +172,7 @@ cleanup_static
 cleanup_server
 
 printf '\n==> WASM Chromium client test\n'
-ln -sfn "$project_root/scripts/browser-wasm.html" "$wasm_assets/index.html"
+ln -sfn "$project_root/resources/browser-wasm.html" "$wasm_assets/index.html"
 ln -sfn "$MISO/tests/static/index.js" "$wasm_assets/index.js"
 ln -sfn "$wasm_bin" "$wasm_assets/component-tests.wasm"
 ln -sfn "$jsffi_path" "$wasm_assets/ghc_wasm_jsffi.js"
@@ -180,7 +180,7 @@ ln -sfn "$browser_wasi_shim" "$wasm_assets/shim"
 ln -sfn "$miso_js" "$wasm_assets/miso.js"
 start_server
 start_static_server "$wasm_assets"
-node scripts/run-playwright.cjs
+node resources/run-playwright.cjs
 cleanup_static
 cleanup_server
 
@@ -191,7 +191,7 @@ cleanup_static
 cleanup_server
 
 printf '\n==> GHCJS Chromium client test\n'
-ln -sfn "$project_root/scripts/browser-ghcjs.html" "$ghcjs_assets/index.html"
+ln -sfn "$project_root/resources/browser-ghcjs.html" "$ghcjs_assets/index.html"
 ln -sfn "$miso_js" "$ghcjs_assets/miso.js"
 ln -sfn "$(cabal list-bin \
   --builddir="$ghcjs_builddir" \
@@ -200,7 +200,7 @@ ln -sfn "$(cabal list-bin \
   "$client_target" | tail -n 1).jsexe/all.js" "$ghcjs_assets/client.js"
 start_server
 start_static_server "$ghcjs_assets"
-node scripts/run-playwright.cjs
+node resources/run-playwright.cjs
 cleanup_static
 cleanup_server
 cleanup_server
