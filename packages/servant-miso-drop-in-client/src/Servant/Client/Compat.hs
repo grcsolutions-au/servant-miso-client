@@ -20,7 +20,9 @@ module Servant.Client.Compat
   , mkClientEnv
   , newManager
   , runClientSync
+  , runClientSyncM
   , waitClient
+  , waitClientM
   , withClientAsync
   ) where
 
@@ -28,6 +30,8 @@ module Servant.Client.Compat
 import Data.Proxy (Proxy)
 import Data.Text (Text)
 import Control.Exception (SomeException)
+import Control.Monad ((>=>))
+import Control.Monad.Except (MonadError, liftEither)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 
 #ifdef VANILLA
@@ -63,18 +67,18 @@ newtype Manager = Manager HttpClient.Manager
 data Manager = Manager
 #endif
 
-newtype BaseUrl 
+
 #ifdef VANILLA
-  = BaseUrl NativeServantClient.BaseUrl
+newtype BaseUrl = BaseUrl NativeServantClient.BaseUrl
 #else
-  = BaseUrl MisoString
+newtype BaseUrl = BaseUrl MisoString
 #endif
 
-newtype ClientEnv
+
 #ifdef VANILLA
-  = ClientEnv NativeServantClient.ClientEnv
+newtype ClientEnv = ClientEnv NativeServantClient.ClientEnv
 #else
-  = ClientEnv BaseUrl
+newtype ClientEnv = ClientEnv BaseUrl
 #endif
 
 newtype ClientError
@@ -203,6 +207,9 @@ waitClient (ClientAsync worker) = liftIO $ wait worker
 waitClient (ClientAsync result) = liftIO $ readMVar result
 #endif
 
+waitClientM :: (MonadIO m, MonadError ClientError m) => ClientAsync a -> m a
+waitClientM = waitClient >=> liftEither
+
 runClientSync :: MonadIO m => ClientRequest a -> m (Either ClientError a)
 #ifdef VANILLA
 -- We can avoid all the async stuff in the synchronous case in a native environment
@@ -212,6 +219,9 @@ runClientSync (ClientRequest request) = liftIO request
 -- so there's nothing we can do than a withAsync followed by an immediate wait on the MVar.
 runClientSync request = withClientAsync request waitClient
 #endif 
+
+runClientSyncM :: (MonadIO m, MonadError ClientError m) => ClientRequest a -> m a
+runClientSyncM = runClientSync >=> liftEither
 
 clientWithEnv ::
 #ifdef VANILLA
@@ -232,4 +242,3 @@ clientWithEnv (ClientEnv env) api =
 #else
 clientWithEnv (ClientEnv (BaseUrl url)) = MisoClient.toClient url
 #endif
-

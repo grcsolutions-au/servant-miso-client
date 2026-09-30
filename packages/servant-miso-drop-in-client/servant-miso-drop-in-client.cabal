@@ -27,6 +27,7 @@ library
       Servant.Client.Compat
   build-depends:
       base
+    , mtl
     , text
   hs-source-dirs:
     src
