@@ -4,6 +4,7 @@
 module Servant.Client.Compat
   ( BaseUrl
   , Client
+  , ClientAsync
   , ClientEnv
   , ClientError(..)
   , ClientRequest
@@ -17,6 +18,8 @@ module Servant.Client.Compat
   , mkClientEnv
   , newManager
   , runClient
+  , waitClient
+  , withClientAsync
   ) where
 
 
@@ -25,6 +28,7 @@ import Data.Text (Text)
 import Control.Exception (SomeException)
 
 #ifdef VANILLA
+import Control.Concurrent.Async (Async, wait, withAsync)
 import qualified Data.Text as Text
 import qualified Data.Bifunctor as Bifunctor
 import qualified Data.Text.IO as TextIO
@@ -33,12 +37,18 @@ import qualified Network.HTTP.Types.Status as HttpStatus
 import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
-import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
 import qualified Control.Exception as Exception
 import qualified Miso.FFI as MisoFFI
 import Miso.FFI (Response(body, errorMessage, status))
 import Miso.String (MisoString, fromMisoString, ms)
 import qualified Servant.Miso.Client as MisoClient
+#endif
+
+#ifdef VANILLA
+newtype ClientAsync a = ClientAsync (Async (Either ClientError a))
+#else
+newtype ClientAsync a = ClientAsync (MVar (Either SomeException (Either ClientError a)))
 #endif
 
 data Scheme
@@ -158,22 +168,32 @@ mkClientEnv (Manager manager) (BaseUrl url) =
 mkClientEnv _ = ClientEnv
 #endif
 
+withClientAsync :: forall a b. ClientRequest a -> (ClientAsync a -> IO b) -> IO b
 #ifdef VANILLA
-runClient :: ClientRequest a -> IO (Either ClientError a)
-runClient (ClientRequest request) = request
+withClientAsync (ClientRequest request) use = withAsync request (use . ClientAsync)
 #else
-runClient :: forall a. ClientRequest a -> IO (Either ClientError a)
-runClient request = do
+withClientAsync request use = do
   result <- newEmptyMVar :: IO (MVar (Either SomeException (Either ClientError a)))
-  let complete action = do
-        outcome <- Exception.try action
+  let complete action = Exception.mask $ \restore -> do
+        outcome <- Exception.try (restore action)
         putMVar result outcome
   request
     (\response -> complete (Right <$> Exception.evaluate (body response)))
     (\response -> complete (Left <$> Exception.evaluate (fromBrowserClientError response)))
-  outcome <- takeMVar result
+  use (ClientAsync result)
+#endif
+
+waitClient :: ClientAsync a -> IO (Either ClientError a)
+#ifdef VANILLA
+waitClient (ClientAsync worker) = wait worker
+#else
+waitClient (ClientAsync result) = do
+  outcome <- readMVar result
   either Exception.throwIO pure outcome
 #endif
+
+runClient :: ClientRequest a -> IO (Either ClientError a)
+runClient request = withClientAsync request waitClient
 
 clientWithEnv ::
 #ifdef VANILLA

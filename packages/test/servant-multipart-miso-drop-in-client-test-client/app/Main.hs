@@ -25,7 +25,6 @@ import qualified Servant.Client.Compat as Client
 import qualified System.Exit as Exit
 
 #ifdef VANILLA
-import Control.Concurrent.Async (wait, withAsync)
 import System.Directory (getTemporaryDirectory)
 import System.IO (hClose, openTempFile)
 #else
@@ -104,6 +103,14 @@ runClientTest = do
   expectStatus503 (runRequest (retryRequest 2))
   retried <- runRequest (retryRequest 2)
   liftIO $ expect (retried == 3) "separate request did not succeed after two failures"
+  repeatedWaits <- liftIO $ Client.withClientAsync (retryRequest 0) $ \pending -> do
+    first <- Client.waitClient pending
+    second <- Client.waitClient pending
+    pure (first, second)
+  liftIO $ case repeatedWaits of
+    (Right first, Right second) ->
+      expect (first == second) "waiting twice changed the client result"
+    _ -> failTest "client request failed while checking repeated waits"
   expectStatus503 (runRequest (retryRequest 20))
   let wrongResult = Client.clientWithEnv clientEnv (Proxy @WrongResultAPI)
   expectInvalid200 (runRequest (wrongResult 0))
@@ -143,12 +150,7 @@ runClientTest = do
 
 runRequest :: Client.ClientRequest a -> ExceptT Client.ClientError IO a
 runRequest request = do
-  outcome <- liftIO $
-#ifdef VANILLA
-    withAsync (Client.runClient request) wait
-#else
-    Client.runClient request
-#endif
+  outcome <- liftIO (Client.withClientAsync request Client.waitClient)
   either throwE pure outcome
 
 expectStatus503 :: ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()

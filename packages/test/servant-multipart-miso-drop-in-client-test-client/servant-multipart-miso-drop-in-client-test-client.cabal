@@ -34,7 +34,6 @@ executable servant-multipart-miso-drop-in-client-test-client
     cpp-options:
       -DVANILLA
     build-depends:
-      async,
       directory,
   if arch(wasm32)
     ghc-options:

@@ -50,7 +50,8 @@ library
     cpp-options:
       -DVANILLA
     build-depends:
-        http-client
+        async
+      , http-client
       , http-types
       , servant-client
 

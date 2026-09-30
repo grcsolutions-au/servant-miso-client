@@ -11,16 +11,19 @@ This is a [servant-client](https://github.com/haskell-servant/servant) binding t
 runClient :: ClientRequest a -> IO (Either ClientError a)
 ```
 
-The browser implementation starts the Miso request and waits for its success or
-error callback. Exceptions raised while processing a callback are rethrown to
-the caller. Callers can manage concurrency with `async`'s `withAsync` and
-`wait`:
+For scoped async-style usage, `withClientAsync` and `waitClient` provide one
+interface on native and browser targets:
 
 ```haskell
-import Control.Concurrent.Async (wait, withAsync)
-
-withAsync (runClient request) wait
+withClientAsync request $ \pending -> do
+  -- perform other work
+  waitClient pending
 ```
+
+Native calls use `async` internally. Browser calls start the Miso request and
+fill a result cell from its success/error callback; callback exceptions are
+rethrown by `waitClient`. Leaving the browser scope cannot abort an in-flight
+fetch.
 
 Both native and browser clients report these `ClientError` constructors:
 
