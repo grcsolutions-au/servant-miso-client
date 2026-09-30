@@ -25,18 +25,18 @@ fill a result cell from its success/error callback; callback exceptions are
 rethrown by `waitClient`. Leaving the browser scope cannot abort an in-flight
 fetch.
 
-Both native and browser clients report these `ClientError` constructors:
+`ClientError` is opaque. Its normalized fields are available through public
+accessors:
 
-- `HttpError Int Text` for a non-successful HTTP status and its diagnostic.
-- `RequestException SomeException` for native transport failures normalized by
-  servant-client.
-- `InvalidResponse (Maybe Int) Text` for decoding failures or browser fetch
-  failures without an HTTP status. A successful HTTP response that cannot be
-  decoded retains its status (for example, `Just 200`).
+- `clientErrorStatus :: ClientError -> Maybe Int`
+- `clientErrorMessage :: ClientError -> Text`
+- `clientErrorException :: ClientError -> Maybe SomeException`
 
-`clientErrorStatus` returns the HTTP status when present. Retry behavior, when
-needed, can be implemented by calling `runClient` again according to the
-application's own policy.
+Native connection failures expose their underlying exception through
+`clientErrorException`; browser fetch failures provide a diagnostic message.
+Decoding errors retain their response status when available, including `Just
+200`. Retry behavior can be implemented by calling `runClient` again according
+to the application's own policy.
 
 ### Integration tests
 

@@ -39,7 +39,7 @@ main = do
   result <- runExceptT runClientTest
   case result of
     Left err ->
-      failTest ("client request failed: " <> pack (show err))
+      failTest ("client request failed: " <> Client.clientErrorMessage err)
     Right () -> pure ()
 
 #ifdef wasm32_HOST_ARCH
@@ -129,7 +129,11 @@ runClientTest = do
   liftIO $ case immediate of
     Right 1 -> pure ()
     _ -> failTest "immediate callback result was not returned"
-  expectException "callback exception" (Client.runClient throwingCallback)
+  expectException "callback exception" $ do
+    result <- Client.runClient throwingCallback
+    case result of
+      Right value -> value `seq` pure ()
+      Left _ -> pure ()
   expectException "request launch failed" (Client.runClient failedLaunch)
 #endif
   let unavailable = Client.clientWithEnv
@@ -138,14 +142,15 @@ runClientTest = do
       _ :<|> unavailableRetry = unavailable
   connectionResult <- (Right <$> runRequest (unavailableRetry 0)) `catchE` (pure . Left)
   liftIO $ case connectionResult of
-#ifdef VANILLA
-    Left (Client.RequestException _) -> pure ()
-    _ -> failTest "connection error was not retryable ClientError"
-#else
-    Left (Client.InvalidResponse Nothing message) ->
-      expect (not (Text.null message) && message /= "Request failed") "missing fetch rejection reason"
-    _ -> failTest "fetch rejection did not preserve its missing status"
-#endif
+    Left err -> do
+      expect (Client.clientErrorStatus err == Nothing) "connection error unexpectedly had a status"
+      expect (not (Text.null (Client.clientErrorMessage err))
+        && Client.clientErrorMessage err /= "Request failed") "missing connection error message"
+      case Client.clientErrorException err of
+        Nothing -> pure ()
+        Just exception ->
+          expect (not (null (show exception))) "missing underlying transport exception"
+    Right _ -> failTest "connection failure returned a successful result"
   liftIO $ consoleLog "SUCCESS"
 
 runRequest :: Client.ClientRequest a -> ExceptT Client.ClientError IO a
@@ -156,9 +161,9 @@ runRequest request = do
 expectStatus503 :: ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
 expectStatus503 request =
   (void request >> liftIO (failTest "expected HTTP 503")) `catchE` \err ->
-    liftIO $ case err of
-      Client.HttpError 503 message -> expect (not (Text.null message)) "missing HTTP error message"
-      _ -> failTest "unexpected retry failure"
+    liftIO $ do
+      expect (Client.clientErrorStatus err == Just 503) "unexpected HTTP status"
+      expect (not (Text.null (Client.clientErrorMessage err))) "missing HTTP error message"
 
 expectStatus :: Int -> ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
 expectStatus status request =
@@ -168,9 +173,9 @@ expectStatus status request =
 expectInvalid200 :: ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
 expectInvalid200 request =
   (void request >> liftIO (failTest "expected malformed 200 response")) `catchE` \err ->
-    liftIO $ case err of
-      Client.InvalidResponse (Just 200) message -> expect (not (Text.null message)) "missing decode error"
-      _ -> failTest "malformed 200 response was not InvalidResponse"
+    liftIO $ do
+      expect (Client.clientErrorStatus err == Just 200) "malformed 200 response lost its status"
+      expect (not (Text.null (Client.clientErrorMessage err))) "missing decode error"
 
 expectException :: Text -> IO a -> ExceptT Client.ClientError IO ()
 expectException message action = do

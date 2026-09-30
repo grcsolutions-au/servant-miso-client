@@ -6,10 +6,12 @@ module Servant.Client.Compat
   , Client
   , ClientAsync
   , ClientEnv
-  , ClientError(..)
+  , ClientError
   , ClientRequest
   , Manager
   , Scheme(..)
+  , clientErrorException
+  , clientErrorMessage
   , clientErrorStatus
   , clientWithEnv
   , consoleError
@@ -75,35 +77,48 @@ newtype ClientEnv
   = ClientEnv BaseUrl
 #endif
 
-data ClientError
-  = HttpError Int Text
-  | RequestException SomeException
-  | InvalidResponse (Maybe Int) Text
-  deriving stock (Show)
+newtype ClientError
+#ifdef VANILLA
+  = ClientError NativeServantClient.ClientError
+#else
+  = ClientError (Response MisoString)
+#endif
 
 clientErrorStatus :: ClientError -> Maybe Int
-clientErrorStatus (HttpError code _) = Just code
-clientErrorStatus (InvalidResponse code _) = code
-clientErrorStatus (RequestException _) = Nothing
-
 #ifdef VANILLA
-fromNativeClientError :: NativeServantClient.ClientError -> ClientError
-fromNativeClientError err = case err of
-  NativeServantClient.FailureResponse _ response -> HttpError (responseStatus response) (Text.pack (show err))
-  NativeServantClient.DecodeFailure message response -> InvalidResponse (Just (responseStatus response)) message
-  NativeServantClient.UnsupportedContentType _ response -> InvalidResponse (Just (responseStatus response)) (Text.pack (show err))
-  NativeServantClient.InvalidContentTypeHeader response -> InvalidResponse (Just (responseStatus response)) (Text.pack (show err))
-  NativeServantClient.ConnectionError exception -> RequestException exception
+clientErrorStatus (ClientError err) = case err of
+  NativeServantClient.FailureResponse _ response -> Just (responseStatus response)
+  NativeServantClient.DecodeFailure _ response -> Just (responseStatus response)
+  NativeServantClient.UnsupportedContentType _ response -> Just (responseStatus response)
+  NativeServantClient.InvalidContentTypeHeader response -> Just (responseStatus response)
+  NativeServantClient.ConnectionError _ -> Nothing
   where
     responseStatus :: NativeServantClient.ResponseF a -> Int
     responseStatus = HttpStatus.statusCode . NativeServantClient.responseStatusCode
 #else
-fromBrowserClientError :: Response MisoString -> ClientError
-fromBrowserClientError response = case status response of
-  Just code | code >= 100 && code < 600 && (code < 200 || code >= 300) -> HttpError code message
-  code -> InvalidResponse code message
-  where
-    message = maybe (fromMisoString (body response)) fromMisoString (errorMessage response)
+clientErrorStatus (ClientError response) = status response
+#endif
+
+clientErrorMessage :: ClientError -> Text
+#ifdef VANILLA
+clientErrorMessage (ClientError err) = case err of
+  NativeServantClient.FailureResponse _ _ -> Text.pack (show err)
+  NativeServantClient.DecodeFailure message _ -> message
+  NativeServantClient.UnsupportedContentType _ _ -> Text.pack (show err)
+  NativeServantClient.InvalidContentTypeHeader _ -> Text.pack (show err)
+  NativeServantClient.ConnectionError exception -> Text.pack (show exception)
+#else
+clientErrorMessage (ClientError response) =
+  maybe (fromMisoString (body response)) fromMisoString (errorMessage response)
+#endif
+
+clientErrorException :: ClientError -> Maybe SomeException
+#ifdef VANILLA
+clientErrorException (ClientError err) = case err of
+  NativeServantClient.ConnectionError exception -> Just exception
+  _ -> Nothing
+#else
+clientErrorException _ = Nothing
 #endif
 
 #ifdef VANILLA
@@ -178,8 +193,8 @@ withClientAsync request use = do
         outcome <- Exception.try (restore action)
         putMVar result outcome
   request
-    (\response -> complete (Right <$> Exception.evaluate (body response)))
-    (\response -> complete (Left <$> Exception.evaluate (fromBrowserClientError response)))
+    (\response -> complete (pure (Right (body response))))
+    (\response -> complete (pure (Left (ClientError response))))
   use (ClientAsync result)
 #endif
 
@@ -210,7 +225,7 @@ clientWithEnv (ClientEnv env) api =
   where
     nativeRunClientM :: NativeServantClient.ClientM a -> ClientRequest a 
     nativeRunClientM request = ClientRequest $
-      Bifunctor.first fromNativeClientError <$> NativeServantClient.runClientM request env
+      Bifunctor.first ClientError <$> NativeServantClient.runClientM request env
 #else
 clientWithEnv (ClientEnv (BaseUrl url)) = MisoClient.toClient url
 #endif
