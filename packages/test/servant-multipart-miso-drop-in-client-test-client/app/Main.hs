@@ -125,16 +125,16 @@ runClientTest = do
       throwingCallback onSuccess _ = onSuccess (Response (Just 200) mempty Nothing (error "callback exception"))
       failedLaunch :: Client.ClientRequest Int
       failedLaunch _ _ = ioError (userError "request launch failed")
-  immediate <- liftIO (Client.runClient immediateRequest)
+  immediate <- liftIO (Client.runClientSync immediateRequest)
   liftIO $ case immediate of
     Right 1 -> pure ()
     _ -> failTest "immediate callback result was not returned"
   expectException "callback exception" $ do
-    result <- Client.runClient throwingCallback
+    result <- Client.runClientSync throwingCallback
     case result of
       Right value -> value `seq` pure ()
       Left _ -> pure ()
-  expectException "request launch failed" (Client.runClient failedLaunch)
+  expectException "request launch failed" (Client.runClientSync failedLaunch)
 #endif
   let unavailable = Client.clientWithEnv
         (Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" (testPort + 2) ""))

@@ -19,7 +19,7 @@ module Servant.Client.Compat
   , mkBaseUrl
   , mkClientEnv
   , newManager
-  , runClient
+  , runClientSync
   , waitClient
   , withClientAsync
   ) where
@@ -28,9 +28,10 @@ module Servant.Client.Compat
 import Data.Proxy (Proxy)
 import Data.Text (Text)
 import Control.Exception (SomeException)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 
 #ifdef VANILLA
-import Control.Concurrent.Async (Async, wait, withAsync)
+import Control.Concurrent.Async (Async, async, wait)
 import qualified Data.Text as Text
 import qualified Data.Bifunctor as Bifunctor
 import qualified Data.Text.IO as TextIO
@@ -40,7 +41,6 @@ import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
-import qualified Control.Exception as Exception
 import qualified Miso.FFI as MisoFFI
 import Miso.FFI (Response(body, errorMessage, status))
 import Miso.String (MisoString, fromMisoString, ms)
@@ -50,7 +50,7 @@ import qualified Servant.Miso.Client as MisoClient
 #ifdef VANILLA
 newtype ClientAsync a = ClientAsync (Async (Either ClientError a))
 #else
-newtype ClientAsync a = ClientAsync (MVar (Either SomeException (Either ClientError a)))
+newtype ClientAsync a = ClientAsync (MVar (Either ClientError a))
 #endif
 
 data Scheme
@@ -132,11 +132,10 @@ type ClientRequest a =
   -> IO ()
 #endif
 
-type Client api
 #ifdef VANILLA
-  = NativeServantClient.Client ClientRequest api
+type Client api = NativeServantClient.Client ClientRequest api
 #else
-  = MisoClient.ClientType api
+type Client api = MisoClient.ClientType api
 #endif
 
 consoleLog :: Text -> IO ()
@@ -183,32 +182,36 @@ mkClientEnv (Manager manager) (BaseUrl url) =
 mkClientEnv _ = ClientEnv
 #endif
 
-withClientAsync :: forall a b. ClientRequest a -> (ClientAsync a -> IO b) -> IO b
+withClientAsync :: forall a b m. MonadIO m => ClientRequest a -> (ClientAsync a -> m b) -> m b
 #ifdef VANILLA
-withClientAsync (ClientRequest request) use = withAsync request (use . ClientAsync)
+withClientAsync (ClientRequest request) use = do
+  asyncResult <- liftIO $ async request
+  use (ClientAsync asyncResult)
 #else
 withClientAsync request use = do
-  result <- newEmptyMVar :: IO (MVar (Either SomeException (Either ClientError a)))
-  let complete action = Exception.mask $ \restore -> do
-        outcome <- Exception.try (restore action)
-        putMVar result outcome
-  request
-    (\response -> complete (pure (Right (body response))))
-    (\response -> complete (pure (Left (ClientError response))))
+  result <- liftIO $ newEmptyMVar :: m (MVar (Either ClientError a))
+  liftIO $ request
+    (\response -> putMVar result (Right (body response)))
+    (\response -> putMVar result (Left (ClientError response)))
   use (ClientAsync result)
 #endif
 
-waitClient :: ClientAsync a -> IO (Either ClientError a)
+waitClient :: MonadIO m => ClientAsync a -> m (Either ClientError a)
 #ifdef VANILLA
-waitClient (ClientAsync worker) = wait worker
+waitClient (ClientAsync worker) = liftIO $ wait worker
 #else
-waitClient (ClientAsync result) = do
-  outcome <- readMVar result
-  either Exception.throwIO pure outcome
+waitClient (ClientAsync result) = liftIO $ readMVar result
 #endif
 
-runClient :: ClientRequest a -> IO (Either ClientError a)
-runClient request = withClientAsync request waitClient
+runClientSync :: MonadIO m => ClientRequest a -> m (Either ClientError a)
+#ifdef VANILLA
+-- We can avoid all the async stuff in the synchronous case in a native environment
+runClientSync (ClientRequest request) = liftIO request
+#else
+-- But, when we're in a WASM/browser environment, we're basically waiting on an MVar anyway
+-- so there's nothing we can do than a withAsync followed by an immediate wait on the MVar.
+runClientSync request = withClientAsync request waitClient
+#endif 
 
 clientWithEnv ::
 #ifdef VANILLA
