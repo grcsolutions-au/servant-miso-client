@@ -3,61 +3,37 @@
 
 This is a [servant-client](https://github.com/haskell-servant/servant) binding to [miso](https://github.com/dmjio/miso).
 
-### Retry policies with the compatibility client
+### Running compatibility requests
 
-`Servant.Client.Compat` applies a `RetryPolicy m a result` to an endpoint's
-`ClientRequest a`. The policy runs attempts and retry decisions in `IO` and
-stores a caller-chosen raw outcome. `retryFinish` converts that outcome in the
-caller's monad; the raw type is internal to the policy. Both native and browser
-clients report the same `ClientError` constructors:
+`runClient` executes one `ClientRequest` and returns its result in `IO`:
+
+```haskell
+runClient :: ClientRequest a -> IO (Either ClientError a)
+```
+
+The browser implementation starts the Miso request and waits for its success or
+error callback. Exceptions raised while processing a callback are rethrown to
+the caller. Callers can manage concurrency with `async`'s `withAsync` and
+`wait`:
+
+```haskell
+import Control.Concurrent.Async (wait, withAsync)
+
+withAsync (runClient request) wait
+```
+
+Both native and browser clients report these `ClientError` constructors:
 
 - `HttpError Int Text` for a non-successful HTTP status and its diagnostic.
-- `RequestException SomeException` for a thrown request or transport failure.
+- `RequestException SomeException` for native transport failures normalized by
+  servant-client.
 - `InvalidResponse (Maybe Int) Text` for decoding failures or browser fetch
   failures without an HTTP status. A successful HTTP response that cannot be
   decoded retains its status (for example, `Just 200`).
 
-`clientErrorStatus` returns the status when present. For example, an endpoint
-returning `Int` can use `ExceptT ClientError IO`:
-
-```haskell
-import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
-import Servant.Client.Compat
-
-policy :: RetryPolicy (ExceptT ClientError IO) Int Int
-policy = RetryPolicy
-  { retryInitialState = 0 :: Int
-  , retryOnError = onError
-  , retryOnSuccess = pure . Right
-  , retryFinish = either throwE pure
-  }
-  where
-    onError retries err = pure $
-      if retries < 2 && clientErrorStatus err == Just 503
-        then Left (retries + 1)
-        else Right (Left err)
-
-runClientTest :: ClientRequest Int -> ExceptT ClientError IO ()
-runClientTest request = do
-  response <- runClient policy request
-  liftIO (print response)
-```
-
-An executable's `main :: IO ()` can interpret `runExceptT (runClientTest request)`
-once and handle any remaining `ClientError` there. `runClient policy request`
-performs the complete request and retry loop in the caller's scope, then runs
-`retryFinish` once in the caller's monad.
-
-The policy can use other raw outcomes and monads, such as `Maybe a` converted
-to `MaybeT IO a`. Request and transport failures can reach `retryOnError` and
-decisions and outcome handlers run once; repeated awaits reuse the raw outcome
-be retried. Asynchronous exceptions are never converted to `RequestException`
-or passed to `retryOnError`. Exceptions from policy hooks are terminal and
-propagate to the caller. Browser calls remain scoped while awaiting a response;
-if the caller is interrupted, the run is abandoned and late callbacks cannot
-start retries or alter its result. There is no detached request handle or
-reusable result.
+`clientErrorStatus` returns the HTTP status when present. Retry behavior, when
+needed, can be implemented by calling `runClient` again according to the
+application's own policy.
 
 ### Integration tests
 

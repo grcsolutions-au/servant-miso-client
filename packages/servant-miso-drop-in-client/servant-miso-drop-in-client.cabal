@@ -28,7 +28,6 @@ library
   build-depends:
       base
     , text
-    , safe-exceptions
   hs-source-dirs:
     src
   default-language:

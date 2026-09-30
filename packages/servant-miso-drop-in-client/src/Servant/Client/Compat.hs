@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Servant.Client.Compat
   ( BaseUrl
@@ -7,7 +8,6 @@ module Servant.Client.Compat
   , ClientError(..)
   , ClientRequest
   , Manager
-  , RetryPolicy(..)
   , Scheme(..)
   , clientErrorStatus
   , clientWithEnv
@@ -16,16 +16,13 @@ module Servant.Client.Compat
   , mkBaseUrl
   , mkClientEnv
   , newManager
-  , noRetry
   , runClient
   ) where
 
 
 import Data.Proxy (Proxy)
 import Data.Text (Text)
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Exception (SomeException, evaluate)
-import qualified Control.Exception.Safe as Safe
+import Control.Exception (SomeException)
 
 #ifdef VANILLA
 import qualified Data.Text as Text
@@ -36,9 +33,8 @@ import qualified Network.HTTP.Types.Status as HttpStatus
 import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
-import Control.Concurrent.MVar (newEmptyMVar, readMVar, tryPutMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
 import qualified Control.Exception as Exception
-import Data.IORef (atomicModifyIORef', newIORef)
 import qualified Miso.FFI as MisoFFI
 import Miso.FFI (Response(body, errorMessage, status))
 import Miso.String (MisoString, fromMisoString, ms)
@@ -162,120 +158,21 @@ mkClientEnv (Manager manager) (BaseUrl url) =
 mkClientEnv _ = ClientEnv
 #endif
 
-data RetryPolicy m a result where
-  RetryPolicy
-    :: { retryInitialState :: state
-       , retryOnError :: state -> ClientError -> IO (Either state raw)
-       , retryOnSuccess :: a -> IO raw
-       , retryFinish :: raw -> m result
-       }
-    -> RetryPolicy m a result
-
-noRetry
-  :: (ClientError -> IO raw)
-  -> (a -> IO raw)
-  -> (raw -> m result)
-  -> RetryPolicy m a result
-noRetry onError retryOnSuccess retryFinish = RetryPolicy
-  { retryInitialState = ()
-  , retryOnError = \_ err -> Right <$> onError err
-  , retryOnSuccess
-  , retryFinish
-  }
-
 #ifdef VANILLA
-runClient :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m result
-runClient RetryPolicy{..} (ClientRequest request) = do
-  raw <- liftIO (go retryInitialState)
-  retryFinish raw
-  where
-    go state = do
-      response <- Safe.tryAny request
-      case response of
-        Left exception -> handleError state (RequestException exception)
-        Right (Left err) -> handleError state err
-        Right (Right value) -> retryOnSuccess value >>= evaluate
-    handleError state err = do
-      decision <- retryOnError state err
-      case decision of
-        Left nextState -> go nextState
-        Right raw -> evaluate raw
+runClient :: ClientRequest a -> IO (Either ClientError a)
+runClient (ClientRequest request) = request
 #else
-data BrowserState
-  = BrowserNotStarted
-  | BrowserAttempt Int
-  | BrowserHandling Int
-  | BrowserFinished
-  | BrowserAbandoned
-
-runClient :: MonadIO m => RetryPolicy m a result -> ClientRequest a -> m result
-runClient RetryPolicy{..} request = do
-  raw <- liftIO runBrowser
-  retryFinish raw
-  where
-    runBrowser = Exception.mask $ \restore -> do
-      state <- newIORef BrowserNotStarted
-      result <- newEmptyMVar
-      let finish generation outcome = do
-            accepted <- atomicModifyIORef' state $ \current -> case current of
-              BrowserHandling active | active == generation -> (BrowserFinished, True)
-              _ -> (current, False)
-            if accepted
-              then do
-                _ <- tryPutMVar result outcome
-                pure ()
-              else pure ()
-          finishException exception = do
-            accepted <- atomicModifyIORef' state $ \current -> case current of
-              BrowserAttempt _ -> (BrowserFinished, True)
-              BrowserHandling _ -> (BrowserFinished, True)
-              _ -> (current, False)
-            if accepted
-              then do
-                _ <- tryPutMVar result (Left exception)
-                pure ()
-              else pure ()
-          supervise action = do
-            outcome <- Exception.try action :: IO (Either SomeException ())
-            case outcome of
-              Left exception -> finishException exception
-              Right () -> pure ()
-          claim generation = atomicModifyIORef' state $ \current -> case current of
-            BrowserAttempt active | active == generation -> (BrowserHandling generation, True)
-            _ -> (current, False)
-          callback generation action = supervise $ do
-            accepted <- claim generation
-            if accepted then action else pure ()
-          startAttempt generation retryState = do
-            started <- atomicModifyIORef' state $ \current -> case current of
-              BrowserNotStarted | generation == 0 -> (BrowserAttempt generation, True)
-              BrowserHandling previous | generation == previous + 1 -> (BrowserAttempt generation, True)
-              _ -> (current, False)
-            if not started
-              then pure ()
-              else supervise $ do
-                launched <- Safe.tryAny $ request
-                  (\response -> callback generation $ do
-                    raw <- retryOnSuccess (body response) >>= evaluate
-                    finish generation (Right raw))
-                  (\response -> callback generation $
-                    handleError generation retryState (fromBrowserClientError response))
-                case launched of
-                  Left exception -> callback generation $
-                    handleError generation retryState (RequestException exception)
-                  Right () -> pure ()
-          handleError generation retryState err = do
-            decision <- retryOnError retryState err
-            case decision of
-              Left nextState -> startAttempt (generation + 1) nextState
-              Right raw -> evaluate raw >>= finish generation . Right
-          abandon = atomicModifyIORef' state $ \current -> case current of
-            BrowserFinished -> (current, ())
-            BrowserAbandoned -> (current, ())
-            _ -> (BrowserAbandoned, ())
-      restore (startAttempt 0 retryInitialState) `Exception.onException` abandon
-      outcome <- restore (readMVar result) `Exception.onException` abandon
-      either Exception.throwIO pure outcome
+runClient :: forall a. ClientRequest a -> IO (Either ClientError a)
+runClient request = do
+  result <- newEmptyMVar :: IO (MVar (Either SomeException (Either ClientError a)))
+  let complete action = do
+        outcome <- Exception.try action
+        putMVar result outcome
+  request
+    (\response -> complete (Right <$> Exception.evaluate (body response)))
+    (\response -> complete (Left <$> Exception.evaluate (fromBrowserClientError response)))
+  outcome <- takeMVar result
+  either Exception.throwIO pure outcome
 #endif
 
 clientWithEnv ::

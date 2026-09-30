@@ -6,11 +6,10 @@
 module Main where
 
 import Control.Monad (unless, void)
-import Control.Exception (AsyncException(ThreadKilled), SomeException, throwIO)
+import Control.Exception (SomeException)
 import qualified Control.Monad.Catch as Catch
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, catchE, runExceptT, throwE)
-import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Data.Proxy (Proxy(..))
 import Data.Text (Text, pack, unpack)
@@ -26,11 +25,9 @@ import qualified Servant.Client.Compat as Client
 import qualified System.Exit as Exit
 
 #ifdef VANILLA
-import Control.Concurrent (forkIO, killThread)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent.Async (wait, withAsync)
 import System.Directory (getTemporaryDirectory)
 import System.IO (hClose, openTempFile)
-import System.Timeout (timeout)
 #else
 import Servant.API.Compat (NoContentVerb, StdMethod(GET))
 import Miso.DSL (jsg, new)
@@ -86,19 +83,6 @@ uploadForm payload = UploadForm
   , attachmentContents = FileData "attachment" "fixture.txt" "text/plain" payload
   }
 
-retryExcept :: Client.RetryPolicy (ExceptT Client.ClientError IO) a a
-retryExcept = Client.RetryPolicy
-  { Client.retryInitialState = 0 :: Int
-  , Client.retryOnError = handleError
-  , Client.retryOnSuccess = pure . Right
-  , Client.retryFinish = either throwE pure
-  }
-  where
-    handleError retries err =
-      pure $ if retries < 2 && Client.clientErrorStatus err == Just 503
-        then Left (retries + 1)
-        else Right (Left err)
-
 runClientTest :: ExceptT Client.ClientError IO ()
 runClientTest = do
   upload <- liftIO expectedUpload
@@ -107,134 +91,45 @@ runClientTest = do
   let baseUrl = Client.mkBaseUrl Client.Http "127.0.0.1" testPort ""
       clientEnv = Client.mkClientEnv manager baseUrl
       uploadRequest :<|> retryRequest = Client.clientWithEnv clientEnv (Proxy @TestAPI)
-      noRetry = Client.noRetry (pure . Left) (pure . Right) (either throwE pure)
       echoEnv = Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" 8081 "")
       echoGet :<|> echoStatus = Client.clientWithEnv echoEnv (Proxy @EchoAPI)
-  echoResponse <- Client.runClient noRetry echoGet
+  echoResponse <- runRequest echoGet
   liftIO $ expect ("/get" `isInfixOf` unpack (url echoResponse)) "echo server did not return the request URL"
-  expectStatus 418 (Client.runClient noRetry (echoStatus 418))
-  response <- Client.runClient noRetry (uploadRequest requestBody)
+  expectStatus 418 (runRequest (echoStatus 418))
+  response <- runRequest (uploadRequest requestBody)
   liftIO $ expect (response == expectedAck)
     ("unexpected response: " <> pack (show response))
 
-  retried <- Client.runClient retryExcept (retryRequest 2)
-  liftIO $ expect (retried == 3) "retry result was incorrect"
-  nextAttempt <- Client.runClient noRetry (retryRequest 2)
-  liftIO $ expect (nextAttempt == 4) "a scoped run repeated the HTTP request"
-
-  expectStatus503 (Client.runClient retryExcept (retryRequest 20))
-  let diagnostic = Client.RetryPolicy
-        { Client.retryInitialState = 0 :: Int
-        , Client.retryOnError = \retries err -> pure $ if retries < 1
-            then Left (retries + 1)
-            else Right (retries + 1, Client.clientErrorStatus err)
-        , Client.retryOnSuccess = \value -> pure (value, Nothing)
-        , Client.retryFinish = pure
-        } :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int (Int, Maybe Int)
-  stopped <- Client.runClient diagnostic (retryRequest 21)
-  liftIO $ expect (stopped == (2, Just 503)) "policy did not use retry state and error"
-
-  expectStatus503 (Client.runClient noRetry (retryRequest 22))
-  direct <- Client.runClient noRetry (retryRequest 0)
-  liftIO $ expect (direct == 1) "noRetry success failed"
-  converted <- Client.runClient
-    (Client.noRetry (\_ -> pure "failed") (pure . show)
-      pure)
-    (retryRequest 0)
-  liftIO $ expect (converted == "2") "policy did not change the result type"
-  let unexpected = Client.RetryPolicy
-        { Client.retryInitialState = ()
-        , Client.retryOnError = \_ _ -> fail "retry decision failed"
-        , Client.retryOnSuccess = pure . show
-        , Client.retryFinish = pure
-        } :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int String
-  expectThrown "retry decision failed" (Client.runClient unexpected (retryRequest 23))
-  expectThrown "retry decision failed" (Client.runClient unexpected (retryRequest 24))
-  let failedSuccess = Client.noRetry (pure . Left) (\_ -> ioError (userError "success handler failed")) (either throwE pure)
-  expectThrown "success handler failed" (Client.runClient failedSuccess (retryRequest 0))
-
-  rawExecutions <- liftIO (newIORef (0 :: Int))
-  finishExecutions <- liftIO (newIORef (0 :: Int))
-  let counted = Client.noRetry (pure . Left)
-        (\value -> modifyIORef' rawExecutions (+ 1) >> pure (Right value))
-        (\outcome -> do
-          liftIO (modifyIORef' finishExecutions (+ 1))
-          either throwE pure outcome)
-  countedResult <- Client.runClient counted (retryRequest 0)
-  rawCount <- liftIO (readIORef rawExecutions)
-  finishCount <- liftIO (readIORef finishExecutions)
-  liftIO $ expect (countedResult > 0 && rawCount == 1 && finishCount == 1)
-    "raw result or finalizer did not run exactly once"
-
-  asyncRetries <- liftIO (newIORef (0 :: Int))
-  let asyncFailure = Client.RetryPolicy
-        { Client.retryInitialState = ()
-        , Client.retryOnError = \_ _ -> do
-            modifyIORef' asyncRetries (+ 1)
-            pure (Right 0)
-        , Client.retryOnSuccess = \_ -> throwIO ThreadKilled
-        , Client.retryFinish = pure
-        } :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int Int
-  expectThrown "thread killed" (Client.runClient asyncFailure (retryRequest 0))
-  asyncRetryCount <- liftIO (readIORef asyncRetries)
-  liftIO $ expect (asyncRetryCount == 0) "asynchronous exception reached the retry policy"
-#ifdef VANILLA
-  blocked <- liftIO newEmptyMVar
-  hookStarted <- liftIO newEmptyMVar
-  workerFinished <- liftIO newEmptyMVar
-  let interruptedPolicy = Client.noRetry (\_ -> pure 0)
-        (\_ -> putMVar hookStarted () >> takeMVar blocked >> pure 0)
-        pure :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int Int
-  worker <- liftIO $ forkIO $ do
-    outcome <- Catch.try (runExceptT (Client.runClient interruptedPolicy (retryRequest 0)))
-      :: IO (Either SomeException (Either Client.ClientError Int))
-    putMVar workerFinished outcome
-  liftIO (takeMVar hookStarted)
-  liftIO (killThread worker)
-  interrupted <- liftIO (timeout 1000000 (takeMVar workerFinished))
-  liftIO $ case interrupted of
-    Just (Left exception) ->
-      expect ("thread killed" `isInfixOf` show exception) "caller interruption changed unexpectedly"
-    Just (Right _) -> failTest "interrupted scoped run returned normally"
-    Nothing -> failTest "interrupted scoped run did not terminate"
-#endif
-
-  let throwingPolicy = Client.noRetry (pure . Left)
-        (\_ -> ioError (userError "raw handler failed"))
-        (either throwE pure)
-  expectThrown "raw handler failed" (Client.runClient throwingPolicy (retryRequest 0))
+  expectStatus503 (runRequest (retryRequest 2))
+  expectStatus503 (runRequest (retryRequest 2))
+  retried <- runRequest (retryRequest 2)
+  liftIO $ expect (retried == 3) "separate request did not succeed after two failures"
+  expectStatus503 (runRequest (retryRequest 20))
   let wrongResult = Client.clientWithEnv clientEnv (Proxy @WrongResultAPI)
-  expectInvalid200 (Client.runClient noRetry (wrongResult 0))
+  expectInvalid200 (runRequest (wrongResult 0))
 #ifndef VANILLA
   let malformedJson = Client.clientWithEnv clientEnv (Proxy @MalformedJsonAPI)
-  expectInvalid200 (Client.runClient noRetry malformedJson)
+  expectInvalid200 (runRequest malformedJson)
   let noContentRequest = Client.clientWithEnv clientEnv (Proxy @NoContentFailAPI)
-  expectStatus503 (Client.runClient noRetry (noContentRequest 1))
+  expectStatus503 (runRequest (noContentRequest 1))
   let immediateRequest :: Client.ClientRequest Int
       immediateRequest onSuccess _ = onSuccess (Response (Just 200) mempty Nothing 1)
-      immediatePolicy = Client.noRetry (pure . Left)
-        (\_ -> ioError (userError "synchronous handler failed")) (either throwE pure)
-  expectThrown "synchronous handler failed" (Client.runClient immediatePolicy immediateRequest)
-  let failedLaunch :: Client.ClientRequest Int
+      throwingCallback :: Client.ClientRequest Int
+      throwingCallback onSuccess _ = onSuccess (Response (Just 200) mempty Nothing (error "callback exception"))
+      failedLaunch :: Client.ClientRequest Int
       failedLaunch _ _ = ioError (userError "request launch failed")
-      launchPolicy = Client.RetryPolicy
-        { Client.retryInitialState = 0 :: Int
-        , Client.retryOnError = \attempt err -> case err of
-            Client.RequestException _ | attempt == 0 -> pure (Left 1)
-            Client.RequestException _ -> pure (Right (attempt + 1))
-            _ -> fail "request launch exception was not retryable"
-        , Client.retryOnSuccess = \_ -> pure (-1)
-        , Client.retryFinish = pure
-        } :: Client.RetryPolicy (ExceptT Client.ClientError IO) Int Int
-  launchAttempts <- Client.runClient launchPolicy failedLaunch
-  liftIO $ expect (launchAttempts == 2) "request launch was not retried"
+  immediate <- liftIO (Client.runClient immediateRequest)
+  liftIO $ case immediate of
+    Right 1 -> pure ()
+    _ -> failTest "immediate callback result was not returned"
+  expectException "callback exception" (Client.runClient throwingCallback)
+  expectException "request launch failed" (Client.runClient failedLaunch)
 #endif
   let unavailable = Client.clientWithEnv
         (Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" (testPort + 2) ""))
         (Proxy @TestAPI)
       _ :<|> unavailableRetry = unavailable
-      connectionPolicy = Client.noRetry (pure . Left) (pure . Right) (either throwE pure)
-  connectionResult <- runExceptT (Client.runClient connectionPolicy (unavailableRetry 0))
+  connectionResult <- (Right <$> runRequest (unavailableRetry 0)) `catchE` (pure . Left)
   liftIO $ case connectionResult of
 #ifdef VANILLA
     Left (Client.RequestException _) -> pure ()
@@ -245,6 +140,16 @@ runClientTest = do
     _ -> failTest "fetch rejection did not preserve its missing status"
 #endif
   liftIO $ consoleLog "SUCCESS"
+
+runRequest :: Client.ClientRequest a -> ExceptT Client.ClientError IO a
+runRequest request = do
+  outcome <- liftIO $
+#ifdef VANILLA
+    withAsync (Client.runClient request) wait
+#else
+    Client.runClient request
+#endif
+  either throwE pure outcome
 
 expectStatus503 :: ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
 expectStatus503 request =
@@ -265,9 +170,9 @@ expectInvalid200 request =
       Client.InvalidResponse (Just 200) message -> expect (not (Text.null message)) "missing decode error"
       _ -> failTest "malformed 200 response was not InvalidResponse"
 
-expectThrown :: Text -> ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
-expectThrown message action = do
-  outcome <- Catch.try (void action) :: ExceptT Client.ClientError IO (Either SomeException ())
+expectException :: Text -> IO a -> ExceptT Client.ClientError IO ()
+expectException message action = do
+  outcome <- liftIO (Catch.try (void action) :: IO (Either SomeException ()))
   liftIO $ case outcome of
     Left exception -> expect (unpack message `isInfixOf` show exception) "unexpected policy exception"
     Right () -> failTest "policy exception did not reach await"
