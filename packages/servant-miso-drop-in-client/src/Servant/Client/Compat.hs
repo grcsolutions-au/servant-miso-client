@@ -4,7 +4,6 @@
 module Servant.Client.Compat
   ( BaseUrl
   , Client
-  , ClientAsync
   , ClientEnv
   , ClientError
   , ClientRequest
@@ -19,42 +18,26 @@ module Servant.Client.Compat
   , mkBaseUrl
   , mkClientEnv
   , newManager
-  , runClientSync
-  , runClientSyncM
-  , waitClient
-  , waitClientM
-  , withClientAsync
+  , sendRequest
   ) where
 
 
 import Data.Proxy (Proxy)
 import Data.Text (Text)
 import Control.Exception (SomeException)
-import Control.Monad ((>=>))
-import Control.Monad.Except (MonadError, liftEither)
-import Control.Monad.IO.Class (MonadIO, liftIO)
 
 #ifdef VANILLA
-import Control.Concurrent.Async (Async, async, wait)
 import qualified Data.Text as Text
-import qualified Data.Bifunctor as Bifunctor
 import qualified Data.Text.IO as TextIO
 import qualified Network.HTTP.Client as HttpClient
 import qualified Network.HTTP.Types.Status as HttpStatus
 import System.IO (stderr)
 import qualified Servant.Client as NativeServantClient
 #else
-import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar)
 import qualified Miso.FFI as MisoFFI
 import Miso.FFI (Response(body, errorMessage, status))
 import Miso.String (MisoString, fromMisoString, ms)
 import qualified Servant.Miso.Client as MisoClient
-#endif
-
-#ifdef VANILLA
-newtype ClientAsync a = ClientAsync (Async (Either ClientError a))
-#else
-newtype ClientAsync a = ClientAsync (MVar (Either ClientError a))
 #endif
 
 data Scheme
@@ -128,7 +111,7 @@ clientErrorException _ = Nothing
 #ifdef VANILLA
 -- We must make this a newtype so we can pass it as a parameter to 
 -- the Client type from Servant
-newtype ClientRequest a = ClientRequest (IO (Either ClientError a))
+newtype ClientRequest a = ClientRequest ((a -> IO ()) -> (ClientError -> IO ()) -> IO ())
 #else
 type ClientRequest a =
   (Response a -> IO ())
@@ -186,43 +169,6 @@ mkClientEnv (Manager manager) (BaseUrl url) =
 mkClientEnv _ = ClientEnv
 #endif
 
-withClientAsync :: forall a b m. MonadIO m => ClientRequest a -> (ClientAsync a -> m b) -> m b
-#ifdef VANILLA
-withClientAsync (ClientRequest request) use = do
-  asyncResult <- liftIO $ async request
-  use (ClientAsync asyncResult)
-#else
-withClientAsync request use = do
-  result <- liftIO $ newEmptyMVar :: m (MVar (Either ClientError a))
-  liftIO $ request
-    (\response -> putMVar result (Right (body response)))
-    (\response -> putMVar result (Left (ClientError response)))
-  use (ClientAsync result)
-#endif
-
-waitClient :: MonadIO m => ClientAsync a -> m (Either ClientError a)
-#ifdef VANILLA
-waitClient (ClientAsync worker) = liftIO $ wait worker
-#else
-waitClient (ClientAsync result) = liftIO $ readMVar result
-#endif
-
-waitClientM :: (MonadIO m, MonadError ClientError m) => ClientAsync a -> m a
-waitClientM = waitClient >=> liftEither
-
-runClientSync :: MonadIO m => ClientRequest a -> m (Either ClientError a)
-#ifdef VANILLA
--- We can avoid all the async stuff in the synchronous case in a native environment
-runClientSync (ClientRequest request) = liftIO request
-#else
--- But, when we're in a WASM/browser environment, we're basically waiting on an MVar anyway
--- so there's nothing we can do than a withAsync followed by an immediate wait on the MVar.
-runClientSync request = withClientAsync request waitClient
-#endif 
-
-runClientSyncM :: (MonadIO m, MonadError ClientError m) => ClientRequest a -> m a
-runClientSyncM = runClientSync >=> liftEither
-
 clientWithEnv ::
 #ifdef VANILLA
   NativeServantClient.HasClient NativeServantClient.ClientM api
@@ -236,9 +182,16 @@ clientWithEnv ::
 clientWithEnv (ClientEnv env) api =
   NativeServantClient.hoistClient api nativeRunClientM (NativeServantClient.client api)
   where
-    nativeRunClientM :: NativeServantClient.ClientM a -> ClientRequest a 
-    nativeRunClientM request = ClientRequest $
-      Bifunctor.first ClientError <$> NativeServantClient.runClientM request env
+    nativeRunClientM :: NativeServantClient.ClientM a -> ClientRequest a
+    nativeRunClientM request = ClientRequest $ \onSuccess onError ->
+      NativeServantClient.runClientM request env >>= either (onError . ClientError) onSuccess
 #else
 clientWithEnv (ClientEnv (BaseUrl url)) = MisoClient.toClient url
+#endif
+
+sendRequest :: ClientRequest a -> (a -> IO ()) -> (ClientError -> IO ()) -> IO ()
+#ifdef VANILLA
+sendRequest (ClientRequest run) = run
+#else
+sendRequest request onSuccess onError = request (onSuccess . body) (onError . ClientError)
 #endif

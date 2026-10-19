@@ -5,25 +5,24 @@ This is a [servant-client](https://github.com/haskell-servant/servant) binding t
 
 ### Running compatibility requests
 
-`runClient` executes one `ClientRequest` and returns its result in `IO`:
+`sendRequest` executes one `ClientRequest` and reports the outcome through
+callbacks, following the same style as Miso's own request API:
 
 ```haskell
-runClient :: ClientRequest a -> IO (Either ClientError a)
+sendRequest :: ClientRequest a -> (a -> IO ()) -> (ClientError -> IO ()) -> IO ()
 ```
-
-For scoped async-style usage, `withClientAsync` and `waitClient` provide one
-interface on native and browser targets:
 
 ```haskell
-withClientAsync request $ \pending -> do
-  -- perform other work
-  waitClient pending
+sendRequest request
+  (\_result -> consoleLog "request succeeded")
+  (\err -> consoleError (clientErrorMessage err))
 ```
 
-Native calls use `async` internally. Browser calls start the Miso request and
-fill a result cell from its success/error callback; callback exceptions are
-rethrown by `waitClient`. Leaving the browser scope cannot abort an in-flight
-fetch.
+Native targets run the request with `servant-client` and invoke exactly one
+callback. Browser targets start the Miso fetch and invoke exactly one callback
+from its response. The two targets behave differently in how they schedule
+work, so code that must work on both should keep its request logic inside the
+callbacks rather than blocking on the result.
 
 `ClientError` is opaque. Its normalized fields are available through public
 accessors:
@@ -35,8 +34,8 @@ accessors:
 Native connection failures expose their underlying exception through
 `clientErrorException`; browser fetch failures provide a diagnostic message.
 Decoding errors retain their response status when available, including `Just
-200`. Retry behavior can be implemented by calling `runClient` again according
-to the application's own policy.
+`200`. Retry behavior can be implemented by calling `sendRequest` again from
+the error callback, according to the application's own policy.
 
 ### Integration tests
 

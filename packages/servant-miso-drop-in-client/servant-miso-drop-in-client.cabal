@@ -27,7 +27,6 @@ library
       Servant.Client.Compat
   build-depends:
       base
-    , mtl
     , text
   hs-source-dirs:
     src
@@ -51,8 +50,7 @@ library
     cpp-options:
       -DVANILLA
     build-depends:
-        async
-      , http-client
+        http-client
       , http-types
       , servant-client
 

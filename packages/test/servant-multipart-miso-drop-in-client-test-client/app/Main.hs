@@ -5,11 +5,9 @@
 
 module Main where
 
-import Control.Monad (unless, void)
-import Control.Exception (SomeException)
-import qualified Control.Monad.Catch as Catch
+import Control.Monad (unless)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.Except (ExceptT, catchE, runExceptT, throwE)
+import Control.Monad.Trans.Cont (ContT(..), runContT)
 import Data.List (isInfixOf)
 import Data.Proxy (Proxy(..))
 import Data.Text (Text, pack, unpack)
@@ -30,17 +28,14 @@ import System.IO (hClose, openTempFile)
 #else
 import Servant.API.Compat (NoContentVerb, StdMethod(GET))
 import Miso.DSL (jsg, new)
-import Miso.FFI (Blob(..), Response(..))
+import Miso.FFI (Blob(..))
 import Miso.String (MisoString, ms)
 #endif
 
+type TestM = ContT () IO
+
 main :: IO ()
-main = do
-  result <- runExceptT runClientTest
-  case result of
-    Left err ->
-      failTest ("client request failed: " <> Client.clientErrorMessage err)
-    Right () -> pure ()
+main = runContT runClientTest pure
 
 #ifdef wasm32_HOST_ARCH
 foreign export javascript "hs_start" main :: IO ()
@@ -82,7 +77,7 @@ uploadForm payload = UploadForm
   , attachmentContents = FileData "attachment" "fixture.txt" "text/plain" payload
   }
 
-runClientTest :: ExceptT Client.ClientError IO ()
+runClientTest :: TestM ()
 runClientTest = do
   upload <- liftIO expectedUpload
   requestBody <- liftIO (withBoundary upload)
@@ -92,55 +87,31 @@ runClientTest = do
       uploadRequest :<|> retryRequest = Client.clientWithEnv clientEnv (Proxy @TestAPI)
       echoEnv = Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" 8081 "")
       echoGet :<|> echoStatus = Client.clientWithEnv echoEnv (Proxy @EchoAPI)
-  echoResponse <- runRequest echoGet
+      wrongResult = Client.clientWithEnv clientEnv (Proxy @WrongResultAPI)
+  echoResponse <- succeed echoGet
   liftIO $ expect ("/get" `isInfixOf` unpack (url echoResponse)) "echo server did not return the request URL"
-  expectStatus 418 (runRequest (echoStatus 418))
-  response <- runRequest (uploadRequest requestBody)
+  expectHttpError 418 (echoStatus 418)
+  response <- succeed (uploadRequest requestBody)
   liftIO $ expect (response == expectedAck)
     ("unexpected response: " <> pack (show response))
 
-  expectStatus503 (runRequest (retryRequest 2))
-  expectStatus503 (runRequest (retryRequest 2))
-  retried <- runRequest (retryRequest 2)
+  expectHttpError 503 (retryRequest 2)
+  expectHttpError 503 (retryRequest 2)
+  retried <- succeed (retryRequest 2)
   liftIO $ expect (retried == 3) "separate request did not succeed after two failures"
-  repeatedWaits <- liftIO $ Client.withClientAsync (retryRequest 0) $ \pending -> do
-    first <- Client.waitClient pending
-    second <- Client.waitClient pending
-    pure (first, second)
-  liftIO $ case repeatedWaits of
-    (Right first, Right second) ->
-      expect (first == second) "waiting twice changed the client result"
-    _ -> failTest "client request failed while checking repeated waits"
-  expectStatus503 (runRequest (retryRequest 20))
-  let wrongResult = Client.clientWithEnv clientEnv (Proxy @WrongResultAPI)
-  expectInvalid200 (runRequest (wrongResult 0))
+  expectHttpError 503 (retryRequest 20)
+  expectInvalid200 (wrongResult 0)
 #ifndef VANILLA
   let malformedJson = Client.clientWithEnv clientEnv (Proxy @MalformedJsonAPI)
-  expectInvalid200 (runRequest malformedJson)
+  expectInvalid200 malformedJson
   let noContentRequest = Client.clientWithEnv clientEnv (Proxy @NoContentFailAPI)
-  expectStatus503 (runRequest (noContentRequest 1))
-  let immediateRequest :: Client.ClientRequest Int
-      immediateRequest onSuccess _ = onSuccess (Response (Just 200) mempty Nothing 1)
-      throwingCallback :: Client.ClientRequest Int
-      throwingCallback onSuccess _ = onSuccess (Response (Just 200) mempty Nothing (error "callback exception"))
-      failedLaunch :: Client.ClientRequest Int
-      failedLaunch _ _ = ioError (userError "request launch failed")
-  immediate <- liftIO (Client.runClientSync immediateRequest)
-  liftIO $ case immediate of
-    Right 1 -> pure ()
-    _ -> failTest "immediate callback result was not returned"
-  expectException "callback exception" $ do
-    result <- Client.runClientSync throwingCallback
-    case result of
-      Right value -> value `seq` pure ()
-      Left _ -> pure ()
-  expectException "request launch failed" (Client.runClientSync failedLaunch)
+  expectHttpError 503 (noContentRequest 1)
 #endif
   let unavailable = Client.clientWithEnv
         (Client.mkClientEnv manager (Client.mkBaseUrl Client.Http "127.0.0.1" (testPort + 2) ""))
         (Proxy @TestAPI)
       _ :<|> unavailableRetry = unavailable
-  connectionResult <- (Right <$> runRequest (unavailableRetry 0)) `catchE` (pure . Left)
+  connectionResult <- request (unavailableRetry 0)
   liftIO $ case connectionResult of
     Left err -> do
       expect (Client.clientErrorStatus err == Nothing) "connection error unexpectedly had a status"
@@ -153,36 +124,33 @@ runClientTest = do
     Right _ -> failTest "connection failure returned a successful result"
   liftIO $ consoleLog "SUCCESS"
 
-runRequest :: Client.ClientRequest a -> ExceptT Client.ClientError IO a
-runRequest request = do
-  outcome <- liftIO (Client.withClientAsync request Client.waitClient)
-  either throwE pure outcome
+request :: Client.ClientRequest a -> TestM (Either Client.ClientError a)
+request req = ContT $ \k -> Client.sendRequest req (k . Right) (k . Left)
 
-expectStatus503 :: ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
-expectStatus503 request =
-  (void request >> liftIO (failTest "expected HTTP 503")) `catchE` \err ->
-    liftIO $ do
-      expect (Client.clientErrorStatus err == Just 503) "unexpected HTTP status"
+succeed :: Client.ClientRequest a -> TestM a
+succeed req = do
+  outcome <- request req
+  case outcome of
+    Left err -> liftIO (failTest ("client request failed: " <> Client.clientErrorMessage err))
+    Right value -> pure value
+
+expectHttpError :: Int -> Client.ClientRequest a -> TestM ()
+expectHttpError status req = do
+  outcome <- request req
+  liftIO $ case outcome of
+    Left err -> do
+      expect (Client.clientErrorStatus err == Just status) ("unexpected HTTP status, expected " <> pack (show status))
       expect (not (Text.null (Client.clientErrorMessage err))) "missing HTTP error message"
+    Right _ -> failTest ("expected HTTP " <> pack (show status))
 
-expectStatus :: Int -> ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
-expectStatus status request =
-  (void request >> liftIO (failTest ("expected HTTP " <> pack (show status)))) `catchE` \err ->
-    liftIO $ expect (Client.clientErrorStatus err == Just status) "unexpected HTTP status"
-
-expectInvalid200 :: ExceptT Client.ClientError IO a -> ExceptT Client.ClientError IO ()
-expectInvalid200 request =
-  (void request >> liftIO (failTest "expected malformed 200 response")) `catchE` \err ->
-    liftIO $ do
+expectInvalid200 :: Client.ClientRequest a -> TestM ()
+expectInvalid200 req = do
+  outcome <- request req
+  liftIO $ case outcome of
+    Left err -> do
       expect (Client.clientErrorStatus err == Just 200) "malformed 200 response lost its status"
       expect (not (Text.null (Client.clientErrorMessage err))) "missing decode error"
-
-expectException :: Text -> IO a -> ExceptT Client.ClientError IO ()
-expectException message action = do
-  outcome <- liftIO (Catch.try (void action) :: IO (Either SomeException ()))
-  liftIO $ case outcome of
-    Left exception -> expect (unpack message `isInfixOf` show exception) "unexpected policy exception"
-    Right () -> failTest "policy exception did not reach await"
+    Right _ -> failTest "expected malformed 200 response"
 
 expect :: Bool -> Text -> IO ()
 expect condition message = unless condition (failTest message)
